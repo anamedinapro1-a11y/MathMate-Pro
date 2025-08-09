@@ -5,15 +5,18 @@ from openai import OpenAI
 
 load_dotenv()
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
-client = OpenAI(api_key=OPENAI_API_KEY)
+# --- Flask app + session ---
+app = Flask(__name__)
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-me")  # required for session cookies
 
+# --- OpenAI setup ---
+OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY is missing")
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 PASSWORD = os.getenv("MATHMATE_PASSWORD", "unlock-mathmate")
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
-# OpenAI SDK reads OPENAI_API_KEY from env automatically
-client = OpenAI()
 
 @app.get("/health")
 def health():
@@ -29,7 +32,7 @@ MATHMATE_PROMPT = """
 - Tone: respectful, encouraging, concise unless Apprentice is chosen.
 """
 
-# --- very simple UI so your root URL works ---
+# --- simple UI ---
 @app.get("/")
 def home():
     return """
@@ -57,7 +60,7 @@ async function send(){
     const r = await fetch('/chat', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ message: m }),   // <— backend expects "message"
+      body: JSON.stringify({ message: m }),
       credentials:'include'
     });
     const data = await r.json();
@@ -70,24 +73,24 @@ async function send(){
 </script>
 """
 
-# --- single, clean /chat route ---
+# --- /chat route ---
 @app.post("/chat")
 def chat():
     try:
         data = request.get_json(silent=True) or {}
-        msg = (data.get("message") or "").strip()  # matches frontend key
+        msg = (data.get("message") or "").strip()
 
         if not msg:
             return jsonify(error="Missing 'message'"), 400
 
-        # 🔒 Password gate first
+        # 🔒 Password gate
         if not session.get("unlocked"):
             if msg.lower() == PASSWORD.lower():
                 session["unlocked"] = True
                 return jsonify(reply="🔓 Unlocked! How many total questions are in this exercise, and which level: 🐣 Apprentice / 🦸 Rising Hero / 🧠 Master?")
             return jsonify(reply="🔒 Please type the access password to begin.")
 
-        # 🤖 Normal tutoring
+        # 🤖 Tutoring
         completion = client.chat.completions.create(
             model=MODEL,
             temperature=0.2,
@@ -103,9 +106,8 @@ def chat():
         app.logger.exception("Chat route crashed")
         return jsonify(error="Server error"), 500
 
-
-# --- local run (Railway/Gunicorn will ignore this) ---
+# --- local run (Railway/Gunicorn uses main:app) ---
 if __name__ == "__main__":
-    # Railway sets PORT; default to 8080 which we exposed
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
+
