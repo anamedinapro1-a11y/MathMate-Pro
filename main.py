@@ -34,7 +34,7 @@ GLOBAL RULES (every turn)
 • Images: briefly say what you SEE (axes, labels, units, fractions/decimals) in a phrase, then micro-lesson + ONE question.
 
 LEVELS
-• Apprentice (precise + defined): use accurate math terms (sum, difference, product, quotient, factor, multiple, numerator/denominator, variable, expression, equation, inequality, rate, slope, intercept, area, perimeter, mean/median/mode, percent). On FIRST use in this session, add a 2–6 word parenthesis definition, e.g., “quotient (result of division)”.
+• Apprentice (precise + defined): use accurate math terms (sum, difference, product, quotient, factor, multiple, numerator/denominator, variable, expression, equation, inequality, rate, slope, intercept, area, perimeter, mean/median/mode, percent). On FIRST use this session, add a 2–6 word parenthesis definition, e.g., “quotient (result of division)”.
 • Rising Hero: micro-lesson only if needed (≤1 sentence). Light nudge.
 • Master: minimal. No micro-lesson unless asked.
 
@@ -63,7 +63,7 @@ HARD_CONSTRAINT = (
 def health():
     return "ok", 200
 
-# ---------- UI (white theme, centered title, bubbles; single composer) ----------
+# ---------- UI (white theme, centered title, bubbles; single composer; guided onboarding) ----------
 @app.get("/")
 def home():
     return """
@@ -100,7 +100,6 @@ def home():
   .thumb{width:80px;height:80px;border:1px solid var(--line);border-radius:8px;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden}
   .thumb img{max-width:100%;max-height:100%}
   small.hint{color:var(--muted)}
-  .hintbar{color:var(--muted); font-size:14px; margin-top:6px}
 </style>
 
 <header><h1>🔒 MathMate Pro</h1></header>
@@ -121,7 +120,6 @@ def home():
           <input id="fileBtn" type="file" accept="image/*" multiple />
           <div id="thumbs"></div>
           <small class="hint">Images are analyzed with your prompt (vision).</small>
-          <div class="hintbar">Session commands (optional): <code>/level apprentice|rising hero|master</code>, <code>/total 7</code>, <code>/q 1</code></div>
         </div>
       </div>
       <button id="sendBtn">Send</button>
@@ -142,10 +140,12 @@ const drop = document.getElementById('drop');
 const thumbs = document.getElementById('thumbs');
 
 let AUTH = '';
+// session state managed client-side to avoid model loops
 let LEVEL = '';
 let TOTAL = '';
 let CURRENT = '';
 let PLAN_DONE = false;
+let ONBOARD = 'level'; // 'level' -> 'total' -> 'current' -> 'done'
 let queuedImages = [];
 
 function addBubble(who, text){
@@ -159,26 +159,33 @@ function addBubble(who, text){
   chat.scrollTop = chat.scrollHeight;
 }
 
-// --- light NLP helpers for natural inputs ---
-function maybeSetLevel(s){
-  const t = s.trim().toLowerCase();
-  if (t === 'apprentice' || t === '/level apprentice') LEVEL = 'Apprentice';
-  else if (t === 'rising hero' || t === '/level rising hero' || t === '/level risinghero') LEVEL = 'Rising Hero';
-  else if (t === 'master' || t === '/level master') LEVEL = 'Master';
-}
-
-function maybeSetTotal(s){
-  const m = s.trim().match(/^\\s*(?:\\/total\\s+)?(\\d{1,3})\\s*$/i);
-  if (m) TOTAL = String(parseInt(m[1],10));
-}
-
-function maybeSetCurrent(s){
-  const m = s.trim().match(/^\\s*(?:\\/q|\\/current)\\s*(\\d{1,3})\\s*$/i);
-  if (m) CURRENT = String(parseInt(m[1],10));
-  else {
-    const mm = s.trim().match(/question\\s*(\\d{1,3})/i);
-    if (mm) CURRENT = String(parseInt(mm[1],10));
+function askNextOnboard(){
+  if(ONBOARD === 'level'){
+    addBubble('MathMate', "Which level should we use—🐣 Apprentice, 🦸 Rising Hero, or 🧠 Master?");
+  } else if(ONBOARD === 'total'){
+    addBubble('MathMate', "How many total questions are in this exercise? 📘");
+  } else if(ONBOARD === 'current'){
+    addBubble('MathMate', "Which question number are we on right now? 📝");
+  } else if(ONBOARD === 'done'){
+    if((LEVEL==='Apprentice' || LEVEL==='Rising Hero') && !PLAN_DONE){
+      addBubble('MathMate', "I’ll guide ~40%, you’ll teach back ~50%, last 10% I’ll be here for questions. ✨");
+      PLAN_DONE = true;
+    } else if(LEVEL === 'Master'){
+      addBubble('MathMate', "Okay. 😊");
+    }
   }
+}
+
+function parseLevel(text){
+  const t = text.toLowerCase();
+  if(/apprentice/.test(t)) return 'Apprentice';
+  if(/rising\\s*hero/.test(t)) return 'Rising Hero';
+  if(/master/.test(t)) return 'Master';
+  return '';
+}
+function parseIntStr(text){
+  const m = text.match(/\\d{1,3}/);
+  return m ? String(parseInt(m[0],10)) : '';
 }
 
 async function post(payload){
@@ -201,7 +208,6 @@ function addThumb(src){
   d.appendChild(img);
   thumbs.appendChild(d);
 }
-
 function fileToDataURL(file){
   return new Promise((res, rej)=>{
     const fr = new FileReader();
@@ -210,7 +216,6 @@ function fileToDataURL(file){
     fr.readAsDataURL(file);
   });
 }
-
 fileBtn.onchange = async (e)=>{
   for(const f of e.target.files){
     const dataURL = await fileToDataURL(f);
@@ -219,7 +224,6 @@ fileBtn.onchange = async (e)=>{
   }
   fileBtn.value = '';
 };
-
 drop.addEventListener('dragover', (e)=>{ e.preventDefault(); drop.style.opacity = .9; });
 drop.addEventListener('dragleave', ()=>{ drop.style.opacity = 1; });
 drop.addEventListener('drop', async (e)=>{
@@ -243,47 +247,47 @@ unlockBtn.onclick = async ()=>{
     AUTH = pw;
     unlock.style.display='none';
     composer.style.display='flex';
+    // start onboarding questions (in-chat, no commands)
+    ONBOARD = 'level';
+    askNextOnboard();
     msgBox.focus();
   }
 };
 
 sendBtn.onclick = async ()=>{
   let text = (msgBox.value||'').trim();
+  if(!text && queuedImages.length===0) return;
 
-  // interpret simple session inputs without sending to the model
-  if (!LEVEL) maybeSetLevel(text);
-  if (!TOTAL) maybeSetTotal(text);
-  if (!CURRENT) maybeSetCurrent(text);
-
-  const isSessionCmd = /^\\s*\\/(level|total|q|current)\\b/i.test(text)
-        || (!LEVEL && /^(apprentice|rising hero|master)$/i.test(text))
-        || (!TOTAL && /^\\d{1,3}$/.test(text))
-        || (!CURRENT && /question\\s*\\d{1,3}/i.test(text));
-
-  if (isSessionCmd && queuedImages.length===0){
-    // show a small confirmation bubble and do not call the model
-    addBubble('You', text);
-    const chips = [
-      LEVEL ? `Level=${LEVEL}` : null,
-      TOTAL ? `Total=${TOTAL}` : null,
-      CURRENT ? `Current=${CURRENT}` : null
-    ].filter(Boolean).join(' · ');
-    addBubble('MathMate', chips ? `Noted session: ${chips} ✨` : `Noted. ✨`);
-    msgBox.value = '';
-    return;
+  // --- handle onboarding locally (no model) ---
+  if(ONBOARD !== 'done'){
+    addBubble('You', text || '(image(s) only)');
+    if(ONBOARD === 'level'){
+      const lvl = parseLevel(text);
+      if(lvl){ LEVEL = lvl; ONBOARD = 'total'; askNextOnboard(); }
+      else { addBubble('MathMate', "Please choose: Apprentice, Rising Hero, or Master. 🙂"); }
+      msgBox.value = ''; return;
+    }
+    if(ONBOARD === 'total'){
+      const n = parseIntStr(text);
+      if(n){ TOTAL = n; ONBOARD = 'current'; askNextOnboard(); }
+      else { addBubble('MathMate', "Type a number like 7, 10, or 15. 📘"); }
+      msgBox.value = ''; return;
+    }
+    if(ONBOARD === 'current'){
+      const n = parseIntStr(text);
+      if(n){ CURRENT = n; ONBOARD = 'done'; askNextOnboard(); }
+      else { addBubble('MathMate', "Type a number like 1 or 2 to set the current question. 📝"); }
+      msgBox.value = ''; return;
+    }
   }
 
-  // normal chat
-  if(!text && queuedImages.length===0) return;
+  // --- normal chat (send to model) ---
   addBubble('You', text || '(image(s) only)');
   msgBox.value = '';
   sendBtn.disabled = true;
   try{
     const data = await post({ message: text, images: queuedImages });
     addBubble('MathMate', (data.reply ?? data.error ?? '(error)'));
-    if(!PLAN_DONE && LEVEL && TOTAL && (LEVEL==='Apprentice' || LEVEL==='Rising Hero')){
-      PLAN_DONE = true; // prevent future plan announcements
-    }
   }finally{
     sendBtn.disabled = false;
     queuedImages = [];
@@ -319,7 +323,7 @@ def chat():
         # Auth gate
         if request.headers.get("X-Auth", "") != PASSWORD:
             if text.lower() == PASSWORD.lower():
-                return jsonify(reply="🔓 Unlocked! You can set session inline: `/level apprentice`, `/total 7`, `/q 1`. Then send your first problem or a photo. ✨")
+                return jsonify(reply="🔓 Unlocked! Let’s set things up quickly.")
             return jsonify(reply="🔒 Please type the access password to begin.")
 
         # Build user content (vision)
