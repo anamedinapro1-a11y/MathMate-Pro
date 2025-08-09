@@ -6,58 +6,64 @@ from openai import OpenAI
 load_dotenv()
 app = Flask(__name__)
 
-# -------------------- CONFIG --------------------
-def clean_key(k: str) -> str:
-    return re.sub(r"\s+", "", (k or ""))
+# ---------- CONFIG ----------
+def strip_ws(s: str) -> str:
+    return re.sub(r"\s+", "", s or "")
 
-OPENAI_API_KEY = clean_key(os.getenv("OPENAI_API_KEY", ""))
+OPENAI_API_KEY = strip_ws(os.getenv("OPENAI_API_KEY", ""))
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is missing")
-
-MODEL    = os.getenv("OPENAI_MODEL", "gpt-4o-mini")   # vision-capable
+MODEL    = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # vision-capable
 PASSWORD = os.getenv("MATHMATE_PASSWORD", "unlock-mathmate")
 DEBUG    = os.getenv("DEBUG", "0") == "1"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# -------------------- TUTOR PROMPT --------------------
+# ---------- TUTOR PROMPT (micro-lesson + one-question) ----------
 MATHMATE_PROMPT = """
-MATHMATE — ONE-STEP SOCRATIC TUTOR (Acton + Khan)
+MATHMATE — SOCRATIC TUTOR (Acton + Khan) with MICRO-LESSONS
 
 GLOBAL RULES (every turn)
-• One-Question Rule: ask EXACTLY ONE short question (≤ 2 sentences). No multi-steps.
-• Never reveal an operation name or write an equation. Do NOT say add/subtract/multiply/divide, and do NOT write expressions like 19−5.
+• Teach-while-asking: start with a tiny MICRO-LESSON (transferable idea, definition, tip, pattern, or common mistake), then ask ONE question.
+• Micro-lesson is short and reusable; do not solve the problem.
+• One-Question Rule: ask EXACTLY ONE question (1 sentence). No multi-steps, no lists.
+• Never reveal an operation name and never write an equation. Do NOT say add/subtract/multiply/divide, and do NOT write expressions like 19−5.
 • Never give the final answer. Never say correct/incorrect. Use neutral acks (“got it”, “noted”) and move on.
-• Tone: friendly, concise, 2–3 emojis max, VARY emojis across turns (pool: 🔎🧩✨💡✅🙌📘📐📊📝🎯🚀🧠📷🔧🌟🤔).
-• Images: describe only what you SEE (axes, labels, units, fractions/decimals) in a phrase, then ask ONE clarifying question.
+• No meta rambling (don’t repeat the plan or “I’m here to help”). Teach → ask.
+• Style: friendly, concise, 2–3 varied emojis (pool: 🔎🧩✨💡✅🙌📘📐📊📝🎯🚀🧠📷🔧🌟🤔).
+• Images: briefly say what you SEE (axes, labels, units, fractions/decimals) in a phrase, then micro-lesson + ONE question.
 
 LEVELS
-• Apprentice (precise + defined): use accurate math words (e.g., sum, difference, product, quotient, factor, multiple, numerator/denominator, variable, expression, equation, inequality, unit rate, slope, intercept, area, perimeter, mean/median/mode, percent). On their FIRST use this session, add a tiny definition in (parentheses), 2–6 words (e.g., “difference (how much bigger)”). After that, use the word normally unless asked.
-• Rising Hero: light nudges; still one question.
-• Master: bare minimum; one tiny question if possible.
+• Apprentice (precise + defined): use accurate math terms (sum, difference, product, quotient, factor, multiple, numerator/denominator, variable, expression, equation, inequality, rate, slope, intercept, area, perimeter, mean/median/mode, percent). On FIRST use in this session, add a 2–6 word parenthesis definition, e.g., “quotient (result of division)”.
+• Rising Hero: micro-lesson only if needed (≤1 sentence). Light nudge.
+• Master: minimal. No micro-lesson unless asked.
 
 SESSION & PLANNING
-• You will receive: level, total_questions, current_question, plan_already_announced.
-• If level/total are known, NEVER ask for them again.
-• If level is Apprentice or Rising Hero and plan_already_announced is false: announce ONCE “I’ll guide ~40%, you’ll teach back ~50%, last 10% I’ll be here for questions.” (one short sentence + 1–2 emojis), then continue with ONE question. Never repeat it.
-• If level is Master: say “Okay.” once when starting, then go minimal.
-• Use current_question to pace. If it’s missing/confusing, briefly ask “Which question number are we on now?” and continue next turn.
+• You will receive session meta: level, total_questions, current_question, plan_already_announced.
+• If level/total are provided, NEVER ask for them again.
+• If level is Apprentice or Rising Hero and plan_already_announced is false: announce ONCE
+  “I’ll guide ~40%, you’ll teach back ~50%, last 10% I’ll be here for questions.” (one short sentence + 1–2 emojis), then continue. Never repeat it.
+• If level is Master: say “Okay.” once and go minimal thereafter.
+• Use current_question to pace. If it is “unknown”, ask ONCE: “Which question number are we on now?” and then wait.
 
 OUTPUT SHAPE
-• One nudge + ONE question ending with “?”. You may include up to 3 short options like “A) …  B) …  C) …”. No equations. No operation names.
+• MICRO-LESSON (0–2 short sentences depending on level) → ONE question ending with “?”.
+• You may include up to 3 short options like “A) …  B) …  C) …”.
+• Absolutely no equations and no operation names.
 """
 
 HARD_CONSTRAINT = (
-    "Hard constraint: reply with ONE short question only (<=2 sentences), "
-    "no equations, no operation names, end with a single '?' and nothing after."
+    "Hard constraint: output a micro-lesson first (0–2 short sentences, per level), "
+    "then EXACTLY ONE question (1 sentence). Total ≤ 3 sentences, with only one '?'. "
+    "No equations. No operation names."
 )
 
-# -------------------- HEALTH --------------------
+# ---------- HEALTH ----------
 @app.get("/health")
 def health():
     return "ok", 200
 
-# -------------------- UI (white theme, centered title, bubbles, session controls) --------------------
+# ---------- UI (white theme, centered title, bubbles; single composer) ----------
 @app.get("/")
 def home():
     return """
@@ -65,10 +71,7 @@ def home():
 <meta charset="utf-8" />
 <title>MathMate Pro</title>
 <style>
-  :root{
-    --bg:#ffffff; --text:#0f172a; --muted:#64748b; --line:#e2e8f0;
-    --me:#e6f0ff; --bot:#f8fafc; --accent:#111827;
-  }
+  :root{--bg:#fff;--text:#0f172a;--muted:#64748b;--line:#e2e8f0;--me:#e6f0ff;--bot:#f8fafc;}
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial}
   header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);padding:18px 16px;text-align:center}
@@ -77,27 +80,27 @@ def home():
   .wrap{width:100%;max-width:900px;padding:16px}
   #chat{min-height:58vh;max-height:72vh;overflow:auto;padding:12px 4px}
   .row{display:flex;margin:10px 0}
-  .bubble{max-width:72%; padding:12px 14px; border:1px solid var(--line); border-radius:16px; line-height:1.5; white-space:pre-wrap}
+  .bubble{max-width:72%;padding:12px 14px;border:1px solid var(--line);border-radius:16px;line-height:1.5;white-space:pre-wrap}
   .me{justify-content:flex-end}
   .me .bubble{background:var(--me)}
   .bot{justify-content:flex-start}
   .bot .bubble{background:var(--bot)}
-  .sys{color:var(--muted); text-align:center; font-style:italic}
+  .sys{color:var(--muted);text-align:center;font-style:italic}
   #panel{position:sticky;bottom:0;background:var(--bg);padding:12px 0;border-top:1px solid var(--line)}
   #unlock{display:flex;gap:8px}
-  #password, select, input[type=number]{padding:12px;border-radius:12px;border:1px solid var(--line);background:#fff;color:var(--text)}
+  input,button{font:inherit}
+  #password, textarea{padding:12px;border-radius:12px;border:1px solid var(--line);background:#fff;color:var(--text)}
   button{padding:12px 16px;border-radius:12px;border:1px solid var(--line);background:#111827;color:#fff;cursor:pointer;min-width:84px}
   button:disabled{opacity:.6;cursor:not-allowed}
   #composer{display:none;gap:10px;align-items:flex-end;flex-wrap:wrap}
   #left{flex:1;display:flex;flex-direction:column;gap:8px;min-width:300px}
-  textarea{flex:1;resize:vertical;min-height:110px;max-height:300px;padding:12px;border-radius:12px;border:1px solid var(--line);background:#fff;color:var(--text)}
-  #session{display:none;gap:8px;align-items:center;flex-wrap:wrap;border:1px dashed var(--line);border-radius:12px;padding:10px;margin-bottom:8px}
+  textarea{flex:1;resize:vertical;min-height:110px;max-height:300px}
   #drop{border:1px dashed var(--line);border-radius:12px;padding:10px;text-align:center;color:var(--muted)}
   #thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
   .thumb{width:80px;height:80px;border:1px solid var(--line);border-radius:8px;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden}
   .thumb img{max-width:100%;max-height:100%}
   small.hint{color:var(--muted)}
-  .chip{padding:6px 10px;border-radius:12px;border:1px solid var(--line);background:#fff}
+  .hintbar{color:var(--muted); font-size:14px; margin-top:6px}
 </style>
 
 <header><h1>🔒 MathMate Pro</h1></header>
@@ -110,36 +113,15 @@ def home():
       <button id="unlockBtn">Unlock</button>
     </div>
 
-    <div id="session">
-      <label>Level:
-        <select id="levelSel">
-          <option value="">choose…</option>
-          <option>Apprentice</option>
-          <option>Rising Hero</option>
-          <option>Master</option>
-        </select>
-      </label>
-      <label>Total questions:
-        <input id="totalQ" type="number" min="1" max="100" placeholder="e.g., 7"/>
-      </label>
-      <label>Current:
-        <input id="currentQ" type="number" min="1" max="100" value="1"/>
-      </label>
-      <button id="prevQ">◀</button>
-      <button id="nextQ">▶</button>
-      <span class="chip" id="qChip">Q 1 / ?</span>
-      <button id="applySession">Apply</button>
-      <small class="hint">Set once—MathMate won’t re-ask. Use ◀ ▶ to update question #.</small>
-    </div>
-
     <div id="composer">
       <div id="left">
-        <textarea id="msg" placeholder="Ask MathMate… (Shift+Enter = newline)"></textarea>
+        <textarea id="msg" placeholder="Chat here… (Shift+Enter = newline). You can also paste images."></textarea>
         <div id="drop">
           <label for="fileBtn">➕ Add images (PNG/JPG) — drag & drop or click</label>
           <input id="fileBtn" type="file" accept="image/*" multiple />
           <div id="thumbs"></div>
-          <small class="hint">Images will be analyzed with the prompt (vision).</small>
+          <small class="hint">Images are analyzed with your prompt (vision).</small>
+          <div class="hintbar">Session commands (optional): <code>/level apprentice|rising hero|master</code>, <code>/total 7</code>, <code>/q 1</code></div>
         </div>
       </div>
       <button id="sendBtn">Send</button>
@@ -150,7 +132,6 @@ def home():
 <script>
 const chat = document.getElementById('chat');
 const unlock = document.getElementById('unlock');
-const sessionBar = document.getElementById('session');
 const composer = document.getElementById('composer');
 const msgBox = document.getElementById('msg');
 const pwdBox = document.getElementById('password');
@@ -159,19 +140,12 @@ const sendBtn = document.getElementById('sendBtn');
 const fileBtn = document.getElementById('fileBtn');
 const drop = document.getElementById('drop');
 const thumbs = document.getElementById('thumbs');
-const levelSel = document.getElementById('levelSel');
-const totalQ = document.getElementById('totalQ');
-const currentQ = document.getElementById('currentQ');
-const prevQ = document.getElementById('prevQ');
-const nextQ = document.getElementById('nextQ');
-const applySession = document.getElementById('applySession');
-const qChip = document.getElementById('qChip');
 
 let AUTH = '';
 let LEVEL = '';
 let TOTAL = '';
-let CURRENT = '1';
-let PLAN_DONE = false;  // announce 40/50/10 only once
+let CURRENT = '';
+let PLAN_DONE = false;
 let queuedImages = [];
 
 function addBubble(who, text){
@@ -185,7 +159,27 @@ function addBubble(who, text){
   chat.scrollTop = chat.scrollHeight;
 }
 
-function updateChip(){ qChip.textContent = `Q ${CURRENT} / ${TOTAL || "?"}`; }
+// --- light NLP helpers for natural inputs ---
+function maybeSetLevel(s){
+  const t = s.trim().toLowerCase();
+  if (t === 'apprentice' || t === '/level apprentice') LEVEL = 'Apprentice';
+  else if (t === 'rising hero' || t === '/level rising hero' || t === '/level risinghero') LEVEL = 'Rising Hero';
+  else if (t === 'master' || t === '/level master') LEVEL = 'Master';
+}
+
+function maybeSetTotal(s){
+  const m = s.trim().match(/^\\s*(?:\\/total\\s+)?(\\d{1,3})\\s*$/i);
+  if (m) TOTAL = String(parseInt(m[1],10));
+}
+
+function maybeSetCurrent(s){
+  const m = s.trim().match(/^\\s*(?:\\/q|\\/current)\\s*(\\d{1,3})\\s*$/i);
+  if (m) CURRENT = String(parseInt(m[1],10));
+  else {
+    const mm = s.trim().match(/question\\s*(\\d{1,3})/i);
+    if (mm) CURRENT = String(parseInt(mm[1],10));
+  }
+}
 
 async function post(payload){
   const r = await fetch('/chat', {
@@ -248,27 +242,38 @@ unlockBtn.onclick = async ()=>{
   if(data.reply && data.reply.startsWith('🔓')){
     AUTH = pw;
     unlock.style.display='none';
-    sessionBar.style.display='flex';
     composer.style.display='flex';
     msgBox.focus();
   }
 };
 
-applySession.onclick = ()=>{
-  LEVEL = levelSel.value || '';
-  TOTAL = (totalQ.value || '').toString();
-  CURRENT = (currentQ.value || '1').toString();
-  PLAN_DONE = false; // allow the one-time plan announcement after applying
-  updateChip();
-  addBubble('MathMate', `Session set: Level = ${LEVEL || "?"}, total = ${TOTAL || "?"}, starting at Q ${CURRENT}. ✨`);
-  msgBox.focus();
-};
-
-prevQ.onclick = ()=>{ const n = Math.max(1, (parseInt(CURRENT||'1')||1) - 1); CURRENT = String(n); currentQ.value = CURRENT; updateChip(); };
-nextQ.onclick = ()=>{ const n = (parseInt(CURRENT||'1')||1) + 1; CURRENT = String(n); currentQ.value = CURRENT; updateChip(); };
-
 sendBtn.onclick = async ()=>{
-  const text = (msgBox.value||'').trim();
+  let text = (msgBox.value||'').trim();
+
+  // interpret simple session inputs without sending to the model
+  if (!LEVEL) maybeSetLevel(text);
+  if (!TOTAL) maybeSetTotal(text);
+  if (!CURRENT) maybeSetCurrent(text);
+
+  const isSessionCmd = /^\\s*\\/(level|total|q|current)\\b/i.test(text)
+        || (!LEVEL && /^(apprentice|rising hero|master)$/i.test(text))
+        || (!TOTAL && /^\\d{1,3}$/.test(text))
+        || (!CURRENT && /question\\s*\\d{1,3}/i.test(text));
+
+  if (isSessionCmd && queuedImages.length===0){
+    // show a small confirmation bubble and do not call the model
+    addBubble('You', text);
+    const chips = [
+      LEVEL ? `Level=${LEVEL}` : null,
+      TOTAL ? `Total=${TOTAL}` : null,
+      CURRENT ? `Current=${CURRENT}` : null
+    ].filter(Boolean).join(' · ');
+    addBubble('MathMate', chips ? `Noted session: ${chips} ✨` : `Noted. ✨`);
+    msgBox.value = '';
+    return;
+  }
+
+  // normal chat
   if(!text && queuedImages.length===0) return;
   addBubble('You', text || '(image(s) only)');
   msgBox.value = '';
@@ -276,9 +281,8 @@ sendBtn.onclick = async ()=>{
   try{
     const data = await post({ message: text, images: queuedImages });
     addBubble('MathMate', (data.reply ?? data.error ?? '(error)'));
-    // after first reply with plan, mark as done so it won't repeat
-    if(!PLAN_DONE && LEVEL && TOTAL && (LEVEL === 'Apprentice' || LEVEL === 'Rising Hero')){
-      PLAN_DONE = true;
+    if(!PLAN_DONE && LEVEL && TOTAL && (LEVEL==='Apprentice' || LEVEL==='Rising Hero')){
+      PLAN_DONE = true; // prevent future plan announcements
     }
   }finally{
     sendBtn.disabled = false;
@@ -297,7 +301,7 @@ pwdBox.addEventListener('keydown', (e)=>{
 </script>
 """
 
-# -------------------- CHAT (vision + session meta) --------------------
+# ---------- CHAT (vision + session meta) ----------
 @app.post("/chat")
 def chat():
     try:
@@ -312,13 +316,13 @@ def chat():
         if not text and not images:
             return jsonify(error="Missing 'message' or 'images'"), 400
 
-        # auth
+        # Auth gate
         if request.headers.get("X-Auth", "") != PASSWORD:
             if text.lower() == PASSWORD.lower():
-                return jsonify(reply="🔓 Unlocked! Set your level, total, and current question below to start. ✨")
+                return jsonify(reply="🔓 Unlocked! You can set session inline: `/level apprentice`, `/total 7`, `/q 1`. Then send your first problem or a photo. ✨")
             return jsonify(reply="🔒 Please type the access password to begin.")
 
-        # assemble user message (vision)
+        # Build user content (vision)
         user_content = []
         if text:
             user_content.append({"type": "text", "text": text})
@@ -330,7 +334,7 @@ def chat():
         session_line = (
             f"Session meta: level={level or 'unknown'}; total_questions={total or 'unknown'}; "
             f"current_question={current or 'unknown'}; plan_already_announced={'true' if plan_done else 'false'}. "
-            "If level and total are known, do not ask for them again."
+            "If level and total are present, do not ask for them again."
         )
 
         planning_line = ""
@@ -338,15 +342,15 @@ def chat():
             if level.lower() in ("apprentice", "rising hero", "risinghero"):
                 planning_line = (
                     "If plan_already_announced is false, announce the 40/50/10 plan exactly once now; "
-                    "otherwise do not mention the plan again."
+                    "after that, never mention it again."
                 )
             else:
-                planning_line = "If level is Master, just say 'Okay.' once at start, then be minimal."
+                planning_line = "If level is Master, just say 'Okay.' once when starting, then be minimal."
 
         apprentice_define_rule = ""
         if (level or "").lower() == "apprentice":
             apprentice_define_rule = (
-                "Apprentice definition rule: when you use a precise math term, include a brief 2–6 word "
+                "Apprentice rule: when you use a precise math term, include a brief 2–6 word "
                 "parenthetical definition on its FIRST appearance this session; do not repeat unless asked."
             )
 
@@ -371,7 +375,7 @@ def chat():
             return jsonify(error=f"{type(e).__name__}: {e}"), 500
         return jsonify(error="Server error"), 500
 
-# -------------------- LOCAL RUN --------------------
+# ---------- LOCAL RUN ----------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
