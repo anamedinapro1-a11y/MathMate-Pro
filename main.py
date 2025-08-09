@@ -5,35 +5,33 @@ from openai import OpenAI
 
 load_dotenv()
 
-# --- Flask app ---
+# -------------------- App & Config --------------------
 app = Flask(__name__)
 
-# --- Config ---
 OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is missing")
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # vision-capable
 PASSWORD = os.getenv("MATHMATE_PASSWORD", "unlock-mathmate")
 DEBUG = os.getenv("DEBUG", "0") == "1"
 
-# --- OpenAI client ---
 client = OpenAI(api_key=OPENAI_API_KEY)
+
+MATHMATE_PROMPT = """
+🎯 MATHMATE – ACTON + KHAN ACADEMY AI GUIDE (COMPRESSED)
+- Socratic guide only: ask questions/options; never confirm correctness; never give final answers.
+- Levels: Apprentice (slow, define terms, step-by-step), Rising Hero (short nudge), Master (student leads).
+- For image problems: first describe what you see (axes, labels, units, fractions/decimals), then ask 1 clarifying question before proceeding.
+- Quiz flow: ask total # of questions; plan 40% guide / 50% teach-back / 10% hands-off; announce each question.
+- Tone: respectful, encouraging, concise unless Apprentice is chosen.
+"""
 
 @app.get("/health")
 def health():
     return "ok", 200
 
-# --- Tutor prompt ---
-MATHMATE_PROMPT = """
-🎯 MATHMATE – ACTON + KHAN ACADEMY AI GUIDE (COMPRESSED)
-- Socratic guide only: ask questions/options; never confirm correctness; never give final answers.
-- Levels: Apprentice (slow, define terms, step-by-step), Rising Hero (short nudge), Master (student leads).
-- Khan image rules: detect fraction/decimal; don’t reveal coordinates; ask x vs y; format awareness.
-- Quiz flow: ask total # of questions; plan 40% guide / 50% teach-back / 10% hands-off; announce each question.
-- Tone: respectful, encouraging, concise unless Apprentice is chosen.
-"""
-
-# --- UI (ChatGPT-style, hides password after unlock) ---
+# -------------------- UI --------------------
 @app.get("/")
 def home():
     return """
@@ -46,19 +44,27 @@ def home():
   body{margin:0;background:#0b1220;color:var(--text);font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial}
   header{position:sticky;top:0;background:#0b1220;border-bottom:1px solid var(--border);padding:14px 18px;font-weight:700}
   main{display:flex;gap:16px;max-width:1000px;margin:0 auto;padding:16px}
-  #chat{flex:1;min-height:60vh;max-height:70vh;overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px}
+  #chat{flex:1;min-height:60vh;max-height:72vh;overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px}
   .row{margin:10px 0;line-height:1.5;white-space:pre-wrap}
   .me b{color:#93c5fd}
   .bot b{color:#86efac}
   .sys{color:var(--muted);font-style:italic}
-  #panel{position:sticky;bottom:0;max-width:1000px;margin:12px auto 28px;display:flex;gap:10px;padding:0 16px}
-  #pwdWrap{flex:1;display:flex;gap:8px}
+  #panel{position:sticky;bottom:0;max-width:1000px;margin:12px auto 28px;display:flex;flex-direction:column;gap:10px;padding:0 16px}
+  #pwdWrap{display:flex;gap:8px}
   #password{flex:1;padding:12px;border-radius:12px;border:1px solid var(--border);background:#0f172a;color:var(--text)}
-  #composer{display:none;flex:1;gap:8px}
-  textarea{flex:1;resize:vertical;min-height:100px;max-height:280px;padding:12px;border-radius:12px;border:1px solid var(--border);background:#0f172a;color:var(--text)}
-  button{padding:12px 16px;border-radius:12px;border:1px solid var(--border);background:#111827;color:var(--text);cursor:pointer}
+  #composer{display:none;gap:10px;align-items:flex-end}
+  #left{flex:1;display:flex;flex-direction:column;gap:8px}
+  textarea{flex:1;resize:vertical;min-height:110px;max-height:300px;padding:12px;border-radius:12px;border:1px solid var(--border);background:#0f172a;color:var(--text)}
+  #drop{border:1px dashed var(--border);border-radius:12px;padding:10px;text-align:center;color:var(--muted)}
+  #thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
+  .thumb{width:80px;height:80px;border:1px solid var(--border);border-radius:8px;background:#0f172a;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  .thumb img{max-width:100%;max-height:100%}
+  button{padding:12px 16px;border-radius:12px;border:1px solid var(--border);background:#111827;color:var(--text);cursor:pointer;min-width:80px}
   button:disabled{opacity:.6;cursor:not-allowed}
+  input[type=file]{display:none}
+  small.hint{color:var(--muted)}
 </style>
+
 <header>🔒 MathMate Pro</header>
 <main>
   <div id="chat">
@@ -73,7 +79,15 @@ def home():
   </div>
 
   <div id="composer">
-    <textarea id="msg" placeholder="Ask MathMate… (Shift+Enter = newline)"></textarea>
+    <div id="left">
+      <textarea id="msg" placeholder="Ask MathMate… (Shift+Enter = newline)"></textarea>
+      <div id="drop">
+        <label for="fileBtn">➕ Add images (PNG/JPG) — drag & drop or click</label>
+        <input id="fileBtn" type="file" accept="image/*" multiple />
+        <div id="thumbs"></div>
+        <small class="hint">Images will be analyzed with the prompt (vision).</small>
+      </div>
+    </div>
     <button id="sendBtn">Send</button>
   </div>
 </div>
@@ -86,8 +100,12 @@ const msgBox = document.getElementById('msg');
 const pwdBox = document.getElementById('password');
 const unlockBtn = document.getElementById('unlockBtn');
 const sendBtn = document.getElementById('sendBtn');
+const fileBtn = document.getElementById('fileBtn');
+const drop = document.getElementById('drop');
+const thumbs = document.getElementById('thumbs');
 
 let AUTH = '';
+let queuedImages = []; // data URLs
 
 function addRow(who, text){
   const div = document.createElement('div');
@@ -97,83 +115,138 @@ function addRow(who, text){
   chat.scrollTop = chat.scrollHeight;
 }
 
-async function post(message){
+async function post(payload){
   const r = await fetch('/chat', {
     method:'POST',
-    headers:{'Content-Type':'application/json', 'X-Auth': AUTH},
-    credentials:'include',
-    body: JSON.stringify({ message })
+    headers:{'Content-Type':'application/json','X-Auth':AUTH},
+    body: JSON.stringify(payload)
   });
   return r.json();
 }
 
-unlockBtn.onclick = async () => {
+function addThumb(src){
+  const wrapper = document.createElement('div');
+  wrapper.className = 'thumb';
+  const img = document.createElement('img');
+  img.src = src;
+  wrapper.appendChild(img);
+  thumbs.appendChild(wrapper);
+}
+
+function fileToDataURL(file){
+  return new Promise((res, rej)=>{
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result);
+    fr.onerror = rej;
+    fr.readAsDataURL(file);
+  });
+}
+
+fileBtn.onchange = async (e)=>{
+  for(const f of e.target.files){
+    const dataURL = await fileToDataURL(f);
+    queuedImages.push(dataURL);
+    addThumb(dataURL);
+  }
+  fileBtn.value = '';
+};
+
+drop.addEventListener('dragover', (e)=>{ e.preventDefault(); drop.style.opacity = .8; });
+drop.addEventListener('dragleave', ()=>{ drop.style.opacity = 1; });
+drop.addEventListener('drop', async (e)=>{
+  e.preventDefault(); drop.style.opacity = 1;
+  const files = Array.from(e.dataTransfer.files || []);
+  for(const f of files){
+    if(!f.type.startsWith('image/')) continue;
+    const dataURL = await fileToDataURL(f);
+    queuedImages.push(dataURL);
+    addThumb(dataURL);
+  }
+});
+
+unlockBtn.onclick = async ()=>{
   const pw = (pwdBox.value||'').trim();
   if(!pw) return;
-  addRow('You', '••••••••');
-  const data = await post(pw); // send pw once to check
+  addRow('You','••••••••');
+  const data = await post({ message: pw });   // try password
   addRow('MathMate', data.reply ?? data.error ?? '(error)');
   if(data.reply && data.reply.startsWith('🔓')){
-    AUTH = pw;                    // store for future requests
-    pwdWrap.style.display = 'none';
-    composer.style.display = 'flex';
+    AUTH = pw;
+    pwdWrap.style.display='none';
+    composer.style.display='flex';
     msgBox.focus();
   }
 };
 
-sendBtn.onclick = async () => {
-  const m = (msgBox.value||'').trim();
-  if(!m) return;
-  addRow('You', m);
+sendBtn.onclick = async ()=>{
+  const text = (msgBox.value||'').trim();
+  if(!text && queuedImages.length===0) return;
+
+  addRow('You', text || '(image(s) only)');
   msgBox.value = '';
   sendBtn.disabled = true;
+
   try{
-    const data = await post(m);
+    const data = await post({ message: text, images: queuedImages });
     addRow('MathMate', (data.reply ?? data.error ?? '(error)'));
   }finally{
     sendBtn.disabled = false;
+    // clear images after sending
+    queuedImages = [];
+    thumbs.innerHTML = '';
     msgBox.focus();
   }
 };
 
-msgBox?.addEventListener('keydown', (e)=>{
+// enter to send; shift+enter newline
+msgBox.addEventListener('keydown', (e)=>{
   if(e.key==='Enter' && !e.shiftKey){
     e.preventDefault();
     sendBtn.click();
   }
 });
-pwdBox?.addEventListener('keydown', (e)=>{
+pwdBox.addEventListener('keydown', (e)=>{
   if(e.key==='Enter'){ e.preventDefault(); unlockBtn.click(); }
 });
 </script>
 """
 
-# --- Single /chat endpoint with header-based auth ---
+# -------------------- Chat (supports images) --------------------
 @app.post("/chat")
 def chat():
     try:
         data = request.get_json(silent=True) or {}
-        msg = (data.get("message") or "").strip()
-        if not msg:
-            return jsonify(error="Missing 'message'"), 400
+        text = (data.get("message") or "").strip()
+        images = data.get("images") or []  # list of data URLs (e.g., "data:image/png;base64,...")
+
+        if not text and not images:
+            return jsonify(error="Missing 'message' or 'images'"), 400
 
         auth = request.headers.get("X-Auth", "")
 
-        # If not authenticated yet, allow sending just the password to unlock
+        # Unlock flow: if not authorized, only accept the password as the text message
         if auth != PASSWORD:
-            if msg.lower() == PASSWORD.lower():
-                return jsonify(
-                    reply="🔓 Unlocked! How many total questions are in this exercise, and which level: 🐣 Apprentice / 🦸 Rising Hero / 🧠 Master?"
-                )
+            if text.lower() == PASSWORD.lower():
+                return jsonify(reply="🔓 Unlocked! How many total questions are in this exercise, and which level: 🐣 Apprentice / 🦸 Rising Hero / 🧠 Master?")
             return jsonify(reply="🔒 Please type the access password to begin.")
 
-        # Auth OK → go to model
+        # Build a vision-aware message
+        user_content = []
+        if text:
+            user_content.append({"type": "text", "text": text})
+        for url in images:
+            # Send the data URL directly; OpenAI supports "image_url" with base64 data URLs
+            user_content.append({"type": "image_url", "image_url": {"url": url}})
+
+        if not user_content:
+            user_content = [{"type": "text", "text": "Please analyze the attached image problem step-by-step."}]
+
         completion = client.chat.completions.create(
             model=MODEL,
             temperature=0.2,
             messages=[
                 {"role": "system", "content": MATHMATE_PROMPT},
-                {"role": "user", "content": msg},
+                {"role": "user", "content": user_content},
             ],
         )
         reply = completion.choices[0].message.content
@@ -184,8 +257,7 @@ def chat():
             return jsonify(error=f"Server error: {type(e).__name__}: {e}"), 500
         return jsonify(error="Server error"), 500
 
-# --- Local run ---
+# -------------------- Local run --------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
-
