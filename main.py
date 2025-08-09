@@ -19,42 +19,69 @@ DEBUG    = os.getenv("DEBUG", "0") == "1"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ---------- TUTOR PROMPT (anchored) ----------
+# ---------- YOUR MATHMATE PROMPT (merged + hardened) ----------
 MATHMATE_PROMPT = """
-MATHMATE — SOCRATIC TUTOR with MICRO-LESSONS (Acton + Khan)
+🎯 MATHMATE – ACTON + KHAN ACADEMY AI GUIDE (Socratic)
 
-ANCHORING RULES (very important)
-• You will receive a Focus Anchor describing the current problem (numbers/scene/user text).
-• STAY on this focus. Do not switch topics or introduce new concepts/examples unless the learner clearly starts a new problem or says “new problem”.
-• If the learner says “I don’t know”, give a micro-lesson relevant to the current focus and ask a smaller clarifying question—do not change topics.
+ROLE
+You are a Socratic math **guide** (not a teacher), Acton Academy style, for learners age 13+. You NEVER give answers. You help students discover them through questions, doubt, and teach-back.
 
-GLOBAL STYLE
-• Teach-while-asking: MICRO-LESSON first (transferable idea/definition/pattern/pitfall), then ONE question.
-• Micro-lesson is brief and reusable; do NOT solve the problem or name the operation.
-• One-Question Rule: ask EXACTLY ONE question (1 sentence). No lists, no multi-steps, only one “?” total.
-• Never reveal an operation or write an equation. Do NOT say add/subtract/multiply/divide. Do NOT write expressions like 19−5.
-• Never give the final answer. Never say correct/incorrect. Use neutral acks (“got it”, “noted”).
-• Friendly + concise + 2–3 varied emojis (pool: 🔎🧩✨💡✅🙌📘📐📊📝🎯🚀🧠📷🔧🌟🤔).
-• Images: briefly state what you SEE (axes, labels, units, fractions/decimals) in a phrase, then micro-lesson + ONE question.
+HOW TO RESPOND
+• ✅ Only ask QUESTIONS or offer OPTIONS. Keep replies short (1–3 sentences).
+• ❌ Never say or imply “correct/incorrect” or “you’re right”.
+• ❌ Never explain unless asked directly.
+• ✅ Always nudge with things like:
+  – “Try it out!”  – “Want to test that with the graph?”  – “That might work—what makes you confident?”
+• If a student proposes an answer:
+  – Do NOT confirm. Ask for reasoning: “What step did you try first?” “What made you choose that?”
+  – Topic-specific nudges:
+    Graphs → “Does that point match the graph?”
+    Equations → “What’s your first move?”
+    Tables → “Are the numbers consistent?”
 
-LEVELS
-• Apprentice (precise + defined): use accurate math terms (sum, difference, product, quotient, factor, multiple, numerator/denominator, variable, expression, equation, inequality, rate, slope, intercept, area, perimeter, mean/median/mode, percent). On FIRST use this session, add a 2–6 word parenthesis definition, e.g., “quotient (result of division)”.
-• Rising Hero: micro-lesson only if needed (≤1 sentence). Light nudge.
-• Master: minimal. No micro-lesson unless asked.
+KHAN SCREENSHOT RULES
+• First check format: fraction vs decimal; which is x vs y; any graph present?
+• If graph: ask for a clear point; ask which axis is which; ask what happens with y/x (unit rate).
+• If the learner’s thinking is right but format is off: “Great thinking—does Khan want decimal or fraction?”
 
-SESSION
-• You will receive: level and focus_anchor. If level is present, never ask for it again. If focus_anchor is present, do not change topics away from it.
+CHALLENGE LEVELS
+• Levels: 🐣 Apprentice (full beginner help), 🦸 Rising Hero (quick clarity), 🧠 Master (you lead).
+• Apprentice: go slow, define any needed terms, ask clear step-by-step questions, never give full answers, be patient.
+• Rising Hero: light support only (≤4 short sentences), ask one helpful question.
+• Master: say as little as possible; “What’s your first step?”
 
-OUTPUT SHAPE
-• MICRO-LESSON (0–2 short statements, no “?”) → ONE question ending with “?”.
-• Up to 3 short options allowed (e.g., “A) …  B) …  C) …”).
-• Absolutely no equations and no operation names.
+QUIZ STRATEGY (40 / 50 / 10)
+• If total_questions is known and level ∈ {Apprentice, Rising Hero} and the plan has not been announced:
+  Announce ONCE: “Here’s our plan 💪  40%: I’ll guide  •  50%: You teach me  •  10%: I’ll be quiet unless you ask.”
+• Ask the student to say when they start a new question so pacing matches the plan.
+
+ALWAYS START CHECK-IN (done client-side; do NOT re-ask if provided)
+• “How many total questions are in this exercise?”
+• “Which level do you want: Apprentice, Rising Hero, or Master?”
+
+MATH ACCURACY
+• Never guess. Compute carefully and consistently. If any arithmetic is needed, reason stepwise internally.
+• Match Khan’s requested format; double-check which number is x and which is y.
+
+DOs & DON’Ts
+• ALWAYS: ask thoughtful questions; encourage reflection; match Khan format; let the student lead; track quiz progress; respond only with a question or options.
+• NEVER: reveal the answer; say “correct”; identify exact graph coordinates; give away exact steps (e.g., “subtract 177 from 266”).
+
+ANCHORING (critical)
+• You will receive a Focus Anchor describing the current problem.
+• STAY on that focus; do not switch topics unless the learner clearly starts a new problem.
+• If the learner says “I don’t know”, keep the focus and ask a smaller, clarifying question or offer 2–3 options.
+
+STYLE
+• Friendly, respectful, curious; never condescending.
+• Vary emojis (2 max) from: 🔎🧩✨💡✅🙌📘📐📊📝🎯🚀🧠📷🔧🌟🤔.
+• No equations in your reply and do not name operations explicitly.
 """
 
 HARD_CONSTRAINT = (
-    "Hard constraint: output a micro-lesson first (0–2 short statements, no '?'), "
-    "then EXACTLY ONE question (1 sentence) — total ≤ 3 sentences and only one '?'. "
-    "No equations. No operation names. Stay anchored to the provided focus."
+    "Hard constraint: respond ONLY with questions or short option sets; "
+    "no answers, no correctness, no equations, no operation names; "
+    "at most 1–2 sentences and one '?' if present; stay on the given focus."
 )
 
 # ---------- HEALTH ----------
@@ -62,7 +89,7 @@ HARD_CONSTRAINT = (
 def health():
     return "ok", 200
 
-# ---------- UI (white theme, centered title, bubbles; one input; anchored) ----------
+# ---------- UI (white, centered title, one composer; in-chat onboarding; images) ----------
 @app.get("/")
 def home():
     return """
@@ -113,12 +140,12 @@ def home():
 
     <div id="composer">
       <div id="left">
-        <textarea id="msg" placeholder="Tell me your level (Apprentice / Rising Hero / Master), then send your problem or a photo. (Shift+Enter = newline)"></textarea>
+        <textarea id="msg" placeholder="Send a screenshot or paste the problem. Say “new question” when you start the next one. (Shift+Enter = newline)"></textarea>
         <div id="drop">
           <label for="fileBtn">➕ Add images (PNG/JPG) — drag & drop or click</label>
           <input id="fileBtn" type="file" accept="image/*" multiple />
           <div id="thumbs"></div>
-          <small class="hint">Images are analyzed with your prompt (vision). Say “new problem” to switch topics.</small>
+          <small class="hint">Images are analyzed with your prompt (vision).</small>
         </div>
       </div>
       <button id="sendBtn">Send</button>
@@ -139,8 +166,13 @@ const drop = document.getElementById('drop');
 const thumbs = document.getElementById('thumbs');
 
 let AUTH = '';
-let LEVEL = '';       // Apprentice | Rising Hero | Master
-let FOCUS = '';       // sticky anchor text for the current problem
+// session state handled client-side to avoid loops
+let LEVEL = '';
+let TOTAL = '';
+let CURRENT = 1;
+let PLAN_DONE = false;
+let FOCUS = '';
+let onboarding = 'total'; // total -> level -> done
 let queuedImages = [];
 
 function addBubble(who, text){
@@ -154,33 +186,56 @@ function addBubble(who, text){
   chat.scrollTop = chat.scrollHeight;
 }
 
-function pickLevelFrom(text){
+function askOnboarding(){
+  if(onboarding === 'total'){
+    addBubble('MathMate', "This looks like a Khan problem! How many total questions are in this exercise? 📘");
+  }else if(onboarding === 'level'){
+    addBubble('MathMate', "Which level do you want: 🐣 Apprentice, 🦸 Rising Hero, or 🧠 Master?");
+  }else if(onboarding === 'done'){
+    if(!PLAN_DONE && TOTAL && (LEVEL==='Apprentice' || LEVEL==='Rising Hero')){
+      addBubble('MathMate', "Here’s our plan 💪  40%: I’ll guide • 50%: you teach me • 10%: I’ll be quiet unless you ask.");
+      PLAN_DONE = true;
+    }else if(LEVEL==='Master'){
+      addBubble('MathMate', "Okay. You lead—what’s your first move?");
+    }
+  }
+}
+
+function parseInt1(text){
+  const m = (text||'').match(/\\d{1,3}/);
+  return m ? parseInt(m[0],10) : null;
+}
+
+function pickLevel(text){
   const t = (text||'').toLowerCase();
-  if(t.includes('apprentice')) return 'Apprentice';
-  if(t.includes('rising hero')) return 'Rising Hero';
-  if(t.includes('master')) return 'Master';
+  if(/apprentice/.test(t)) return 'Apprentice';
+  if(/rising\\s*hero/.test(t)) return 'Rising Hero';
+  if(/master/.test(t)) return 'Master';
   return '';
 }
 
-// Very light heuristics: treat a longer text with numbers/math words or any images as a new focus
+// heuristics to set/refresh focus
 function looksLikeProblem(text){
   const hasNums = /\\d/.test(text||'');
   const longish = (text||'').length >= 16;
-  const mathy = /(total|difference|sum|product|quotient|fraction|percent|area|perimeter|slope|graph|points|solve|x|y)/i.test(text||'');
+  const mathy = /(total|difference|sum|product|quotient|fraction|percent|rate|area|perimeter|slope|graph|table|equation|x|y)/i.test(text||'');
   return (hasNums && longish) || mathy;
 }
-
-function resetFocusIfNewProblem(text, imgCount){
+function resetFocusMaybe(text, imgCount){
+  if(/\\bnew question\\b|\\bnext question\\b/i.test(text||'')){ CURRENT = Math.max(1, CURRENT+1); return; }
   if(/\\bnew problem\\b/i.test(text||'')) { FOCUS = ''; return; }
-  if(imgCount > 0) { FOCUS = '(image problem)'; return; }
-  if(looksLikeProblem(text)) { FOCUS = text.slice(0, 300); }
+  if(imgCount>0) { FOCUS = '(image problem)'; return; }
+  if(looksLikeProblem(text)){ FOCUS = text.slice(0, 300); }
 }
 
 async function post(payload){
   const r = await fetch('/chat', {
     method:'POST',
     headers:{'Content-Type':'application/json','X-Auth':AUTH},
-    body: JSON.stringify({ ...payload, level: LEVEL, focus: FOCUS })
+    body: JSON.stringify({
+      ...payload,
+      level: LEVEL, total: TOTAL, current: CURRENT, plan_done: PLAN_DONE, focus: FOCUS
+    })
   });
   return r.json();
 }
@@ -232,32 +287,34 @@ unlockBtn.onclick = async ()=>{
     AUTH = pw;
     unlock.style.display='none';
     composer.style.display='flex';
-    addBubble('MathMate', "Which level should we use—🐣 Apprentice, 🦸 Rising Hero, or 🧠 Master?");
+    onboarding = 'total'; askOnboarding();
     msgBox.focus();
   }
 };
 
 sendBtn.onclick = async ()=>{
-  let text = (msgBox.value||'').trim();
+  const text = (msgBox.value||'').trim();
   if(!text && queuedImages.length===0) return;
 
-  // capture level once
-  if(!LEVEL){
+  // onboarding first (handled locally, no model calls)
+  if(onboarding !== 'done'){
     addBubble('You', text || '(image(s) only)');
-    const lv = pickLevelFrom(text);
-    if(lv){
-      LEVEL = lv;
-      addBubble('MathMate', `Great — we’ll use **${LEVEL}** mode. Send your problem or a photo. ✨`);
-    }else{
-      addBubble('MathMate', "Please choose: Apprentice, Rising Hero, or Master. 🙂");
+    if(onboarding === 'total'){
+      const n = parseInt1(text);
+      if(n){ TOTAL = String(n); onboarding='level'; askOnboarding(); }
+      else { addBubble('MathMate', "Type a number like 7, 10, or 15. 📘"); }
+      msgBox.value=''; return;
     }
-    msgBox.value = ''; return;
+    if(onboarding === 'level'){
+      const lvl = pickLevel(text);
+      if(lvl){ LEVEL=lvl; onboarding='done'; CURRENT=1; PLAN_DONE=False=>false; askOnboarding(); }
+      else { addBubble('MathMate', "Please choose: Apprentice, Rising Hero, or Master. 🙂"); }
+      msgBox.value=''; return;
+    }
   }
 
-  // update sticky focus when new problem arrives
-  resetFocusIfNewProblem(text, queuedImages.length);
-
   // normal chat
+  resetFocusMaybe(text, queuedImages.length);
   addBubble('You', text || '(image(s) only)');
   msgBox.value = '';
   sendBtn.disabled = true;
@@ -281,61 +338,63 @@ pwdBox.addEventListener('keydown', (e)=>{
 </script>
 """
 
-# ---------- CHAT (vision + level + focus) ----------
+# ---------- CHAT (vision + meta + anchor) ----------
 @app.post("/chat")
 def chat():
     try:
         p = request.get_json(silent=True) or {}
-        text   = (p.get("message") or "").strip()
-        images = p.get("images") or []
-        level  = (p.get("level") or "").strip()
-        focus  = (p.get("focus") or "").strip()  # sticky anchor
+        text    = (p.get("message") or "").strip()
+        images  = p.get("images") or []
+        level   = (p.get("level") or "").strip()
+        total   = (p.get("total") or "").strip()
+        current = (p.get("current") or "").strip()
+        plan_done = bool(p.get("plan_done", False))
+        focus  = (p.get("focus") or "").strip()
 
         if not text and not images:
             return jsonify(error="Missing 'message' or 'images'"), 400
 
-        # Auth gate
+        # auth
         if request.headers.get("X-Auth", "") != PASSWORD:
             if text.lower() == PASSWORD.lower():
-                return jsonify(reply="🔓 Unlocked! Let’s pick your level to start.")
+                return jsonify(reply="🔓 Unlocked! Let’s set things up quick.")
             return jsonify(reply="🔒 Please type the access password to begin.")
 
-        # Build user content (vision)
+        # user content (vision)
         user_content = []
         if text:
             user_content.append({"type": "text", "text": text})
-        for url in images:
-            user_content.append({"type": "image_url", "image_url": {"url": url}})
+        for u in images:
+            user_content.append({"type": "image_url", "image_url": {"url": u}})
         if not user_content:
             user_content = [{"type": "text", "text": "Please analyze the attached image problem."}]
 
         session_line = (
-            f"Session meta: level={level or 'unknown'}. "
-            "If level is present, do not ask for it again; start tutoring immediately."
+            f"Session meta: level={level or 'unknown'}, total_questions={total or 'unknown'}, "
+            f"current_question={current or 'unknown'}, plan_announced={'true' if plan_done else 'false'}. "
+            "If level and total are known, NEVER ask for them again."
         )
+        plan_rule = ""
+        if level and total and not plan_done and level.lower() in ("apprentice","rising hero","risinghero"):
+            plan_rule = "Announce the 40/50/10 plan ONCE now, then do not mention it again."
+
         focus_line = (
-            f"Focus Anchor: {focus or '(no explicit anchor; infer from last user message/image)'} "
-            "Stay on this focus and do not switch topics unless the learner clearly starts a new problem or says 'new problem'. "
-            "If the learner says 'I don’t know', provide a micro-lesson relevant to THIS focus and ask a smaller clarifying question."
+            f"Focus Anchor: {focus or '(infer from the last user content)'} "
+            "Stay on this focus; do not switch topics unless the learner clearly starts a new problem or says 'new question/new problem'. "
+            "If the learner says 'I don’t know', ask a smaller clarifying question or offer 2–3 options, but keep the same focus."
         )
 
-        apprentice_define_rule = ""
-        if (level or "").lower() == "apprentice":
-            apprentice_define_rule = (
-                "Apprentice rule: when you use a precise math term, include a brief 2–6 word "
-                "parenthetical definition on its FIRST appearance this session; do not repeat unless asked."
-            )
         intensity_line = ""
         if (level or "").lower() == "rising hero":
-            intensity_line = "Rising Hero style: add a tiny micro-lesson only if needed; one light nudge."
+            intensity_line = "Style: Rising Hero — light support (≤4 short sentences), one helpful question."
         elif (level or "").lower() == "master":
-            intensity_line = "Master style: minimal; no micro-lesson unless asked; one tiny question."
+            intensity_line = "Style: Master — minimal; ask as little as possible."
 
         messages = [
             {"role": "system", "content": MATHMATE_PROMPT},
             {"role": "system", "content": focus_line},
             {"role": "system", "content": session_line},
-            {"role": "system", "content": apprentice_define_rule},
+            {"role": "system", "content": plan_rule},
             {"role": "system", "content": intensity_line},
             {"role": "system", "content": HARD_CONSTRAINT},
             {"role": "user", "content": user_content},
