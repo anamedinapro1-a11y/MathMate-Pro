@@ -1,43 +1,68 @@
-import os
-import re
+import os, re
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from openai import OpenAI
 
 load_dotenv()
-
 app = Flask(__name__)
 
-# --- CONFIG ----------------------------------------------------
-def clean_key(k: str) -> str:
-    # remove ALL whitespace anywhere (spaces, tabs, newlines)
-    return re.sub(r"\s+", "", (k or ""))
+# ---------- CONFIG ----------
+def strip_ws(s: str) -> str:
+    return re.sub(r"\s+", "", s or "")
 
-RAW_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_API_KEY = clean_key(RAW_KEY)
+OPENAI_API_KEY = strip_ws(os.getenv("OPENAI_API_KEY", ""))
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is missing")
-
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")     # vision-capable
+MODEL    = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # vision-capable
 PASSWORD = os.getenv("MATHMATE_PASSWORD", "unlock-mathmate")
-# keep DEBUG on until it works; then set DEBUG=0 or remove
-DEBUG = os.getenv("DEBUG", "1") == "1"
+DEBUG    = os.getenv("DEBUG", "0") == "1"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+# ---------- TUTOR PROMPT (anchored) ----------
 MATHMATE_PROMPT = """
-🎯 MATHMATE – ACTON + KHAN ACADEMY AI GUIDE (COMPRESSED)
-- Socratic guide only: ask questions/options; never confirm correctness; never give final answers.
-- Levels: Apprentice (slow, define terms, step-by-step), Rising Hero (short nudge), Master (student leads).
-- For image problems: first describe what you see (axes, labels, units, fractions/decimals), then ask 1 clarifying question.
-- Quiz flow: ask total # of questions; plan 40% guide / 50% teach-back / 10% hands-off; announce each question.
-- Tone: respectful, encouraging, concise unless Apprentice is chosen.
+MATHMATE — SOCRATIC TUTOR with MICRO-LESSONS (Acton + Khan)
+
+ANCHORING RULES (very important)
+• You will receive a Focus Anchor describing the current problem (numbers/scene/user text).
+• STAY on this focus. Do not switch topics or introduce new concepts/examples unless the learner clearly starts a new problem or says “new problem”.
+• If the learner says “I don’t know”, give a micro-lesson relevant to the current focus and ask a smaller clarifying question—do not change topics.
+
+GLOBAL STYLE
+• Teach-while-asking: MICRO-LESSON first (transferable idea/definition/pattern/pitfall), then ONE question.
+• Micro-lesson is brief and reusable; do NOT solve the problem or name the operation.
+• One-Question Rule: ask EXACTLY ONE question (1 sentence). No lists, no multi-steps, only one “?” total.
+• Never reveal an operation or write an equation. Do NOT say add/subtract/multiply/divide. Do NOT write expressions like 19−5.
+• Never give the final answer. Never say correct/incorrect. Use neutral acks (“got it”, “noted”).
+• Friendly + concise + 2–3 varied emojis (pool: 🔎🧩✨💡✅🙌📘📐📊📝🎯🚀🧠📷🔧🌟🤔).
+• Images: briefly state what you SEE (axes, labels, units, fractions/decimals) in a phrase, then micro-lesson + ONE question.
+
+LEVELS
+• Apprentice (precise + defined): use accurate math terms (sum, difference, product, quotient, factor, multiple, numerator/denominator, variable, expression, equation, inequality, rate, slope, intercept, area, perimeter, mean/median/mode, percent). On FIRST use this session, add a 2–6 word parenthesis definition, e.g., “quotient (result of division)”.
+• Rising Hero: micro-lesson only if needed (≤1 sentence). Light nudge.
+• Master: minimal. No micro-lesson unless asked.
+
+SESSION
+• You will receive: level and focus_anchor. If level is present, never ask for it again. If focus_anchor is present, do not change topics away from it.
+
+OUTPUT SHAPE
+• MICRO-LESSON (0–2 short statements, no “?”) → ONE question ending with “?”.
+• Up to 3 short options allowed (e.g., “A) …  B) …  C) …”).
+• Absolutely no equations and no operation names.
 """
 
+HARD_CONSTRAINT = (
+    "Hard constraint: output a micro-lesson first (0–2 short statements, no '?'), "
+    "then EXACTLY ONE question (1 sentence) — total ≤ 3 sentences and only one '?'. "
+    "No equations. No operation names. Stay anchored to the provided focus."
+)
+
+# ---------- HEALTH ----------
 @app.get("/health")
 def health():
     return "ok", 200
 
+# ---------- UI (white theme, centered title, bubbles; one input; anchored) ----------
 @app.get("/")
 def home():
     return """
@@ -45,60 +70,65 @@ def home():
 <meta charset="utf-8" />
 <title>MathMate Pro</title>
 <style>
-  :root{--card:#111827;--text:#e5e7eb;--muted:#9ca3af;--border:#374151}
+  :root{--bg:#fff;--text:#0f172a;--muted:#64748b;--line:#e2e8f0;--me:#e6f0ff;--bot:#f8fafc;}
   *{box-sizing:border-box}
-  body{margin:0;background:#0b1220;color:var(--text);font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial}
-  header{position:sticky;top:0;background:#0b1220;border-bottom:1px solid var(--border);padding:14px 18px;font-weight:700}
-  main{display:flex;gap:16px;max-width:1000px;margin:0 auto;padding:16px}
-  #chat{flex:1;min-height:60vh;max-height:72vh;overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px}
-  .row{margin:10px 0;line-height:1.5;white-space:pre-wrap}
-  .me b{color:#93c5fd}
-  .bot b{color:#86efac}
-  .sys{color:var(--muted);font-style:italic}
-  #panel{position:sticky;bottom:0;max-width:1000px;margin:12px auto 28px;display:flex;flex-direction:column;gap:10px;padding:0 16px}
-  #pwdWrap{display:flex;gap:8px}
-  #password{flex:1;padding:12px;border-radius:12px;border:1px solid var(--border);background:#0f172a;color:var(--text)}
-  #composer{display:none;gap:10px;align-items:flex-end}
-  #left{flex:1;display:flex;flex-direction:column;gap:8px}
-  textarea{flex:1;resize:vertical;min-height:110px;max-height:300px;padding:12px;border-radius:12px;border:1px solid var(--border);background:#0f172a;color:var(--text)}
-  #drop{border:1px dashed var(--border);border-radius:12px;padding:10px;text-align:center;color:var(--muted)}
-  #thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
-  .thumb{width:80px;height:80px;border:1px solid var(--border);border-radius:8px;background:#0f172a;display:flex;align-items:center;justify-content:center;overflow:hidden}
-  .thumb img{max-width:100%;max-height:100%}
-  button{padding:12px 16px;border-radius:12px;border:1px solid var(--border);background:#111827;color:var(--text);cursor:pointer;min-width:80px}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial}
+  header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);padding:18px 16px;text-align:center}
+  header h1{margin:0;font-size:22px;letter-spacing:.2px}
+  main{display:flex;justify-content:center}
+  .wrap{width:100%;max-width:900px;padding:16px}
+  #chat{min-height:58vh;max-height:72vh;overflow:auto;padding:12px 4px}
+  .row{display:flex;margin:10px 0}
+  .bubble{max-width:72%;padding:12px 14px;border:1px solid var(--line);border-radius:16px;line-height:1.5;white-space:pre-wrap}
+  .me{justify-content:flex-end}
+  .me .bubble{background:var(--me)}
+  .bot{justify-content:flex-start}
+  .bot .bubble{background:var(--bot)}
+  .sys{color:var(--muted);text-align:center;font-style:italic}
+  #panel{position:sticky;bottom:0;background:var(--bg);padding:12px 0;border-top:1px solid var(--line)}
+  #unlock{display:flex;gap:8px}
+  input,button{font:inherit}
+  #password, textarea{padding:12px;border-radius:12px;border:1px solid var(--line);background:#fff;color:var(--text)}
+  button{padding:12px 16px;border-radius:12px;border:1px solid var(--line);background:#111827;color:#fff;cursor:pointer;min-width:84px}
   button:disabled{opacity:.6;cursor:not-allowed}
-  input[type=file]{display:none}
+  #composer{display:none;gap:10px;align-items:flex-end;flex-wrap:wrap}
+  #left{flex:1;display:flex;flex-direction:column;gap:8px;min-width:300px}
+  textarea{flex:1;resize:vertical;min-height:110px;max-height:300px}
+  #drop{border:1px dashed var(--line);border-radius:12px;padding:10px;text-align:center;color:var(--muted)}
+  #thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
+  .thumb{width:80px;height:80px;border:1px solid var(--line);border-radius:8px;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  .thumb img{max-width:100%;max-height:100%}
   small.hint{color:var(--muted)}
 </style>
 
-<header>🔒 MathMate Pro</header>
-<main>
-  <div id="chat"><div class="row sys">Type the password to unlock.</div></div>
-</main>
+<header><h1>🔒 MathMate Pro</h1></header>
+<main><div class="wrap">
+  <div id="chat"><div class="sys">Type the password to unlock.</div></div>
 
-<div id="panel">
-  <div id="pwdWrap">
-    <input id="password" placeholder="Type password…" />
-    <button id="unlockBtn">Unlock</button>
-  </div>
-
-  <div id="composer">
-    <div id="left">
-      <textarea id="msg" placeholder="Ask MathMate… (Shift+Enter = newline)"></textarea>
-      <div id="drop">
-        <label for="fileBtn">➕ Add images (PNG/JPG) — drag & drop or click</label>
-        <input id="fileBtn" type="file" accept="image/*" multiple />
-        <div id="thumbs"></div>
-        <small class="hint">Images will be analyzed with the prompt (vision).</small>
-      </div>
+  <div id="panel">
+    <div id="unlock">
+      <input id="password" placeholder="Type password…" />
+      <button id="unlockBtn">Unlock</button>
     </div>
-    <button id="sendBtn">Send</button>
+
+    <div id="composer">
+      <div id="left">
+        <textarea id="msg" placeholder="Tell me your level (Apprentice / Rising Hero / Master), then send your problem or a photo. (Shift+Enter = newline)"></textarea>
+        <div id="drop">
+          <label for="fileBtn">➕ Add images (PNG/JPG) — drag & drop or click</label>
+          <input id="fileBtn" type="file" accept="image/*" multiple />
+          <div id="thumbs"></div>
+          <small class="hint">Images are analyzed with your prompt (vision). Say “new problem” to switch topics.</small>
+        </div>
+      </div>
+      <button id="sendBtn">Send</button>
+    </div>
   </div>
-</div>
+</div></main>
 
 <script>
 const chat = document.getElementById('chat');
-const pwdWrap = document.getElementById('pwdWrap');
+const unlock = document.getElementById('unlock');
 const composer = document.getElementById('composer');
 const msgBox = document.getElementById('msg');
 const pwdBox = document.getElementById('password');
@@ -109,21 +139,48 @@ const drop = document.getElementById('drop');
 const thumbs = document.getElementById('thumbs');
 
 let AUTH = '';
+let LEVEL = '';       // Apprentice | Rising Hero | Master
+let FOCUS = '';       // sticky anchor text for the current problem
 let queuedImages = [];
 
-function addRow(who, text){
-  const div = document.createElement('div');
-  div.className = 'row ' + (who==='You'?'me':'bot');
-  div.innerHTML = `<b>${who}:</b> ${text.replace(/</g,'&lt;')}`;
-  chat.appendChild(div);
+function addBubble(who, text){
+  const row = document.createElement('div');
+  row.className = who === 'You' ? 'row me' : 'row bot';
+  const b = document.createElement('div');
+  b.className = 'bubble';
+  b.innerHTML = text.replace(/</g,'&lt;');
+  row.appendChild(b);
+  chat.appendChild(row);
   chat.scrollTop = chat.scrollHeight;
+}
+
+function pickLevelFrom(text){
+  const t = (text||'').toLowerCase();
+  if(t.includes('apprentice')) return 'Apprentice';
+  if(t.includes('rising hero')) return 'Rising Hero';
+  if(t.includes('master')) return 'Master';
+  return '';
+}
+
+// Very light heuristics: treat a longer text with numbers/math words or any images as a new focus
+function looksLikeProblem(text){
+  const hasNums = /\\d/.test(text||'');
+  const longish = (text||'').length >= 16;
+  const mathy = /(total|difference|sum|product|quotient|fraction|percent|area|perimeter|slope|graph|points|solve|x|y)/i.test(text||'');
+  return (hasNums && longish) || mathy;
+}
+
+function resetFocusIfNewProblem(text, imgCount){
+  if(/\\bnew problem\\b/i.test(text||'')) { FOCUS = ''; return; }
+  if(imgCount > 0) { FOCUS = '(image problem)'; return; }
+  if(looksLikeProblem(text)) { FOCUS = text.slice(0, 300); }
 }
 
 async function post(payload){
   const r = await fetch('/chat', {
     method:'POST',
     headers:{'Content-Type':'application/json','X-Auth':AUTH},
-    body: JSON.stringify(payload)
+    body: JSON.stringify({ ...payload, level: LEVEL, focus: FOCUS })
   });
   return r.json();
 }
@@ -136,7 +193,6 @@ function addThumb(src){
   d.appendChild(img);
   thumbs.appendChild(d);
 }
-
 function fileToDataURL(file){
   return new Promise((res, rej)=>{
     const fr = new FileReader();
@@ -145,7 +201,6 @@ function fileToDataURL(file){
     fr.readAsDataURL(file);
   });
 }
-
 fileBtn.onchange = async (e)=>{
   for(const f of e.target.files){
     const dataURL = await fileToDataURL(f);
@@ -154,8 +209,7 @@ fileBtn.onchange = async (e)=>{
   }
   fileBtn.value = '';
 };
-
-drop.addEventListener('dragover', (e)=>{ e.preventDefault(); drop.style.opacity = .8; });
+drop.addEventListener('dragover', (e)=>{ e.preventDefault(); drop.style.opacity = .9; });
 drop.addEventListener('dragleave', ()=>{ drop.style.opacity = 1; });
 drop.addEventListener('drop', async (e)=>{
   e.preventDefault(); drop.style.opacity = 1;
@@ -171,26 +225,45 @@ drop.addEventListener('drop', async (e)=>{
 unlockBtn.onclick = async ()=>{
   const pw = (pwdBox.value||'').trim();
   if(!pw) return;
-  addRow('You','••••••••');
+  addBubble('You','••••••••');
   const data = await post({ message: pw });
-  addRow('MathMate', data.reply ?? data.error ?? '(error)');
+  addBubble('MathMate', data.reply ?? data.error ?? '(error)');
   if(data.reply && data.reply.startsWith('🔓')){
     AUTH = pw;
-    pwdWrap.style.display='none';
+    unlock.style.display='none';
     composer.style.display='flex';
+    addBubble('MathMate', "Which level should we use—🐣 Apprentice, 🦸 Rising Hero, or 🧠 Master?");
     msgBox.focus();
   }
 };
 
 sendBtn.onclick = async ()=>{
-  const text = (msgBox.value||'').trim();
+  let text = (msgBox.value||'').trim();
   if(!text && queuedImages.length===0) return;
-  addRow('You', text || '(image(s) only)');
+
+  // capture level once
+  if(!LEVEL){
+    addBubble('You', text || '(image(s) only)');
+    const lv = pickLevelFrom(text);
+    if(lv){
+      LEVEL = lv;
+      addBubble('MathMate', `Great — we’ll use **${LEVEL}** mode. Send your problem or a photo. ✨`);
+    }else{
+      addBubble('MathMate', "Please choose: Apprentice, Rising Hero, or Master. 🙂");
+    }
+    msgBox.value = ''; return;
+  }
+
+  // update sticky focus when new problem arrives
+  resetFocusIfNewProblem(text, queuedImages.length);
+
+  // normal chat
+  addBubble('You', text || '(image(s) only)');
   msgBox.value = '';
   sendBtn.disabled = true;
   try{
     const data = await post({ message: text, images: queuedImages });
-    addRow('MathMate', (data.reply ?? data.error ?? '(error)'));
+    addBubble('MathMate', (data.reply ?? data.error ?? '(error)'));
   }finally{
     sendBtn.disabled = false;
     queuedImages = [];
@@ -208,44 +281,79 @@ pwdBox.addEventListener('keydown', (e)=>{
 </script>
 """
 
+# ---------- CHAT (vision + level + focus) ----------
 @app.post("/chat")
 def chat():
     try:
-        payload = request.get_json(silent=True) or {}
-        text = (payload.get("message") or "").strip()
-        images = payload.get("images") or []
+        p = request.get_json(silent=True) or {}
+        text   = (p.get("message") or "").strip()
+        images = p.get("images") or []
+        level  = (p.get("level") or "").strip()
+        focus  = (p.get("focus") or "").strip()  # sticky anchor
 
         if not text and not images:
             return jsonify(error="Missing 'message' or 'images'"), 400
 
+        # Auth gate
         if request.headers.get("X-Auth", "") != PASSWORD:
             if text.lower() == PASSWORD.lower():
-                return jsonify(reply="🔓 Unlocked! How many total questions are in this exercise, and which level: 🐣 Apprentice / 🦸 Rising Hero / 🧠 Master?")
+                return jsonify(reply="🔓 Unlocked! Let’s pick your level to start.")
             return jsonify(reply="🔒 Please type the access password to begin.")
 
+        # Build user content (vision)
         user_content = []
         if text:
             user_content.append({"type": "text", "text": text})
         for url in images:
             user_content.append({"type": "image_url", "image_url": {"url": url}})
-
         if not user_content:
             user_content = [{"type": "text", "text": "Please analyze the attached image problem."}]
+
+        session_line = (
+            f"Session meta: level={level or 'unknown'}. "
+            "If level is present, do not ask for it again; start tutoring immediately."
+        )
+        focus_line = (
+            f"Focus Anchor: {focus or '(no explicit anchor; infer from last user message/image)'} "
+            "Stay on this focus and do not switch topics unless the learner clearly starts a new problem or says 'new problem'. "
+            "If the learner says 'I don’t know', provide a micro-lesson relevant to THIS focus and ask a smaller clarifying question."
+        )
+
+        apprentice_define_rule = ""
+        if (level or "").lower() == "apprentice":
+            apprentice_define_rule = (
+                "Apprentice rule: when you use a precise math term, include a brief 2–6 word "
+                "parenthetical definition on its FIRST appearance this session; do not repeat unless asked."
+            )
+        intensity_line = ""
+        if (level or "").lower() == "rising hero":
+            intensity_line = "Rising Hero style: add a tiny micro-lesson only if needed; one light nudge."
+        elif (level or "").lower() == "master":
+            intensity_line = "Master style: minimal; no micro-lesson unless asked; one tiny question."
+
+        messages = [
+            {"role": "system", "content": MATHMATE_PROMPT},
+            {"role": "system", "content": focus_line},
+            {"role": "system", "content": session_line},
+            {"role": "system", "content": apprentice_define_rule},
+            {"role": "system", "content": intensity_line},
+            {"role": "system", "content": HARD_CONSTRAINT},
+            {"role": "user", "content": user_content},
+        ]
 
         completion = client.chat.completions.create(
             model=MODEL,
             temperature=0.2,
-            messages=[
-                {"role": "system", "content": MATHMATE_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
+            messages=messages,
         )
         return jsonify(reply=completion.choices[0].message.content)
 
     except Exception as e:
-        # Always show the real error while we stabilize
-        return jsonify(error=f"{type(e).__name__}: {e}"), 500
+        if DEBUG:
+            return jsonify(error=f"{type(e).__name__}: {e}"), 500
+        return jsonify(error="Server error"), 500
 
+# ---------- LOCAL RUN ----------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
