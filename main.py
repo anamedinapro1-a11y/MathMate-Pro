@@ -1,43 +1,61 @@
-import os
-import re
+import os, re
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from openai import OpenAI
 
 load_dotenv()
-
 app = Flask(__name__)
 
-# --- CONFIG ----------------------------------------------------
+# -------------------- CONFIG --------------------
 def clean_key(k: str) -> str:
-    # remove ALL whitespace anywhere (spaces, tabs, newlines)
-    return re.sub(r"\s+", "", (k or ""))
+    return re.sub(r"\s+", "", (k or ""))  # strip ALL whitespace/newlines
 
-RAW_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_API_KEY = clean_key(RAW_KEY)
+OPENAI_API_KEY = clean_key(os.getenv("OPENAI_API_KEY", ""))
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is missing")
 
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")     # vision-capable
+MODEL    = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # vision-capable
 PASSWORD = os.getenv("MATHMATE_PASSWORD", "unlock-mathmate")
-# keep DEBUG on until it works; then set DEBUG=0 or remove
-DEBUG = os.getenv("DEBUG", "1") == "1"
+DEBUG    = os.getenv("DEBUG", "0") == "1"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+# -------------------- TUTOR PROMPT (ONE-STEP SOCratic) --------------------
 MATHMATE_PROMPT = """
-🎯 MATHMATE – ACTON + KHAN ACADEMY AI GUIDE (COMPRESSED)
-- Socratic guide only: ask questions/options; never confirm correctness; never give final answers.
-- Levels: Apprentice (slow, define terms, step-by-step), Rising Hero (short nudge), Master (student leads).
-- For image problems: first describe what you see (axes, labels, units, fractions/decimals), then ask 1 clarifying question.
-- Quiz flow: ask total # of questions; plan 40% guide / 50% teach-back / 10% hands-off; announce each question.
-- Tone: respectful, encouraging, concise unless Apprentice is chosen.
+MATHMATE — ONE-STEP SOCRATIC TUTOR (Acton + Khan)
+
+Core rules (must follow):
+1) One-Question Rule: each reply asks EXACTLY ONE short question (≤2 sentences). No lists. No multiple steps at once.
+2) Never reveal the operation or write an equation. Do NOT say words like “subtract/multiply/divide/add”, and do NOT show expressions like 19 − 5. Let the learner decide.
+3) Never give the final answer and never say correct/incorrect. Use neutral acknowledgments (“got it”, “noted”), then ask the next question.
+4) Style: friendly, concise, 2–3 emojis max. Keep it cool and encouraging, not formal.
+5) Levels:
+   - Apprentice: micro-steps (identify numbers → what’s asked → choose operation → set up → compute → check). Still ONE question at a time.
+   - Rising Hero: slightly bigger steps, still one question.
+   - Master: high-level prompts; learner leads. Still one question.
+6) Images: briefly describe what you SEE (axes, labels, units, fractions/decimals) without solving, then ask ONE clarifying question.
+7) Quiz flow idea: weave 40% guidance, 50% teach-back, 10% hands-off across turns—BUT always only one question per turn.
+8) Output format: start with a tiny nudge + a single question ending with “?”. Include 2–3 emojis. No equations, no operation names.
+
+Good examples:
+- “🧩 We’re comparing two amounts. Which operation feels right here — ➕, ➖, ✖️, or ➗ ?”
+- “🔎 What two quantities are we comparing in the problem?”
+- “📏 Do we want a total, a difference, or something else?”
+
+Bad (forbidden):
+- “You should subtract…”
+- “Set up 19 − 5 = …”
+- Multiple steps or lists in one message.
 """
 
+HARD_CONSTRAINT = "Hard constraint: reply with ONE short question only (≤2 sentences), no equations, no operation names, end with a single '?' and nothing after."
+
+# -------------------- HEALTH --------------------
 @app.get("/health")
 def health():
     return "ok", 200
 
+# -------------------- UI --------------------
 @app.get("/")
 def home():
     return """
@@ -208,6 +226,7 @@ pwdBox.addEventListener('keydown', (e)=>{
 </script>
 """
 
+# -------------------- CHAT (with images + strict style) --------------------
 @app.post("/chat")
 def chat():
     try:
@@ -218,17 +237,18 @@ def chat():
         if not text and not images:
             return jsonify(error="Missing 'message' or 'images'"), 400
 
+        # simple header auth
         if request.headers.get("X-Auth", "") != PASSWORD:
             if text.lower() == PASSWORD.lower():
                 return jsonify(reply="🔓 Unlocked! How many total questions are in this exercise, and which level: 🐣 Apprentice / 🦸 Rising Hero / 🧠 Master?")
             return jsonify(reply="🔒 Please type the access password to begin.")
 
+        # Build a vision-aware user message
         user_content = []
         if text:
             user_content.append({"type": "text", "text": text})
         for url in images:
             user_content.append({"type": "image_url", "image_url": {"url": url}})
-
         if not user_content:
             user_content = [{"type": "text", "text": "Please analyze the attached image problem."}]
 
@@ -237,15 +257,18 @@ def chat():
             temperature=0.2,
             messages=[
                 {"role": "system", "content": MATHMATE_PROMPT},
+                {"role": "system", "content": HARD_CONSTRAINT},
                 {"role": "user", "content": user_content},
             ],
         )
         return jsonify(reply=completion.choices[0].message.content)
 
     except Exception as e:
-        # Always show the real error while we stabilize
-        return jsonify(error=f"{type(e).__name__}: {e}"), 500
+        if DEBUG:
+            return jsonify(error=f"{type(e).__name__}: {e}"), 500
+        return jsonify(error="Server error"), 500
 
+# -------------------- LOCAL RUN --------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
