@@ -19,7 +19,59 @@ DEBUG    = os.getenv("DEBUG", "0") == "1"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ---------- TUTOR PROMPT (anchored) ----------
+# ---------- OUTPUT GUARDRAILS (questions/options only + no confirmations) ----------
+_CONFIRM_WORDS = re.compile(r"\b(correct|right|exactly|nailed\s*it|that\s*works|you'?re\s*right)\b", re.I)
+# hide explicit operation hints
+_OP_NAMES = re.compile(r"\b(add|subtract|multiply|divide|plug|replace|simplify|distribute|factor|solve|isolate|cross[-\s]?multiply)\b", re.I)
+# raw operators/equations/inline fractions
+_EQN_BITS = re.compile(r"([=+\-*/^]|(?<!\w)%|\b\d+\s*/\s*\d+\b)")
+# coordinates like (4, 2.5)
+_COORDS = re.compile(r"\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)")
+# answer-revealy phrases
+_EXPLAINERS = re.compile(r"\b(the answer is|so you get|therefore|thus|equals)\b", re.I)
+
+def _limit_sentences_and_questions(text: str) -> str:
+    parts = re.split(r"(?<=[\.\?\!])\s+", text.strip())
+    parts = [p.strip() for p in parts if p.strip()][:3]  # ≤3 sentences
+    text = " ".join(parts) if parts else ""
+
+    # exactly one '?'
+    q_positions = [m.start() for m in re.finditer(r"\?", text)]
+    if len(q_positions) == 0:
+        text = (text.rstrip(".!…") + " — what do you want to try next?").strip() if text else "What do you want to try first?"
+    elif len(q_positions) > 1:
+        last = q_positions[-1]
+        buff = []
+        for i, ch in enumerate(text):
+            buff.append("." if ch == "?" and i != last else ch)
+        text = "".join(buff)
+    return text
+
+def enforce_mathmate_style(text: str) -> str:
+    t = (text or "").strip()
+    if not t:
+        return "What do you want to try first?"
+
+    # strip confirmations
+    t = _CONFIRM_WORDS.sub(" ", t)
+    # avoid giving away operations
+    t = _OP_NAMES.sub("that step", t)
+    # hide raw equations/operators
+    t = _EQN_BITS.sub("…", t)
+    # avoid explicit coordinates
+    t = _COORDS.sub("that point", t)
+    # avoid declarative “here’s the answer”
+    if _EXPLAINERS.search(t) and "?" not in t:
+        t = re.sub(_EXPLAINERS, "What makes you confident that", t)
+
+    t = _limit_sentences_and_questions(t)
+
+    # ensure question/options ending
+    if "?" not in t and not re.search(r"(^|\n)\s*([\-•]|A\)|1\))", t):
+        t = t.rstrip(".!…") + " — what would you try next?"
+    return t.strip()
+
+# ---------- TUTOR PROMPT (anchored; your original) ----------
 MATHMATE_PROMPT = """
 MATHMATE — SOCRATIC TUTOR with MICRO-LESSONS (Acton + Khan)
 
@@ -51,6 +103,43 @@ OUTPUT SHAPE
 • Absolutely no equations and no operation names.
 """
 
+# ---------- EXTRA GUIDE RULES (merged; 40/50/10 REMOVED) ----------
+GUIDE_RULES = """
+You are MathMate — a Socratic math GUIDE (not a teacher) for learners 13+, inspired by Acton Academy and using Khan Academy-style problems.
+
+RESPONDING
+- Aside from brief micro-lesson lines, respond ONLY with QUESTIONS or concise OPTION lists.
+- Never say or imply “correct,” “right,” or confirm correctness.
+- Do not explain further unless the learner directly asks.
+
+WHEN THE LEARNER PROPOSES AN ANSWER
+- Do NOT confirm it. Nudge thinking with:
+  • “Try it out.”
+  • “What made you choose that?”
+
+IF THE LEARNER IS STUCK OR OFF-TRACK
+- Ask process questions:
+  • “What step did you try first?”
+  • “Can you walk me through your thinking?”
+  • Graphs: “Does that point match the graph?”
+  • Equations: “What’s your first move?”
+  • Tables: “Are the numbers consistent?”
+
+SCREENSHOTS / FORMAT CHECKS
+- Clarify early:
+  • “Is the answer needed as a fraction or decimal?”
+  • “Which is x and which is y?”
+  • “Is there a graph? Can you find a clean point?”
+  • “What happens when you divide y by x?”
+- If reasoning is right but format mismatched:
+  • “Great thinking — does Khan want that as a decimal or a fraction?”
+
+MATH ACCURACY
+- Use a calculator/tool for arithmetic when needed; do not guess.
+- Double-check x vs y.
+- Match the exact output format Khan requests.
+"""
+
 HARD_CONSTRAINT = (
     "Hard constraint: output a micro-lesson first (0–2 short statements, no '?'), "
     "then EXACTLY ONE question (1 sentence) — total ≤ 3 sentences and only one '?'. "
@@ -62,7 +151,7 @@ HARD_CONSTRAINT = (
 def health():
     return "ok", 200
 
-# ---------- UI (white theme, centered title, bubbles; one input; anchored) ----------
+# ---------- UI ----------
 @app.get("/")
 def home():
     return """
@@ -162,7 +251,6 @@ function pickLevelFrom(text){
   return '';
 }
 
-// Very light heuristics: treat a longer text with numbers/math words or any images as a new focus
 function looksLikeProblem(text){
   const hasNums = /\\d/.test(text||'');
   const longish = (text||'').length >= 16;
@@ -241,7 +329,6 @@ sendBtn.onclick = async ()=>{
   let text = (msgBox.value||'').trim();
   if(!text && queuedImages.length===0) return;
 
-  // capture level once
   if(!LEVEL){
     addBubble('You', text || '(image(s) only)');
     const lv = pickLevelFrom(text);
@@ -254,10 +341,8 @@ sendBtn.onclick = async ()=>{
     msgBox.value = ''; return;
   }
 
-  // update sticky focus when new problem arrives
   resetFocusIfNewProblem(text, queuedImages.length);
 
-  // normal chat
   addBubble('You', text || '(image(s) only)');
   msgBox.value = '';
   sendBtn.disabled = true;
@@ -333,6 +418,7 @@ def chat():
 
         messages = [
             {"role": "system", "content": MATHMATE_PROMPT},
+            {"role": "system", "content": GUIDE_RULES},   # merged GUIDE (no 40/50/10)
             {"role": "system", "content": focus_line},
             {"role": "system", "content": session_line},
             {"role": "system", "content": apprentice_define_rule},
@@ -346,7 +432,8 @@ def chat():
             temperature=0.2,
             messages=messages,
         )
-        return jsonify(reply=completion.choices[0].message.content)
+        raw = completion.choices[0].message.content
+        return jsonify(reply=enforce_mathmate_style(raw))
 
     except Exception as e:
         if DEBUG:
