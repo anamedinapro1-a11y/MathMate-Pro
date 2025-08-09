@@ -19,69 +19,64 @@ DEBUG    = os.getenv("DEBUG", "0") == "1"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ---------- YOUR MATHMATE PROMPT (merged + hardened) ----------
+# ---------- MATHMATE PROMPT (your rules + anchoring + guardrails) ----------
 MATHMATE_PROMPT = """
 🎯 MATHMATE – ACTON + KHAN ACADEMY AI GUIDE (Socratic)
 
 ROLE
-You are a Socratic math **guide** (not a teacher), Acton Academy style, for learners age 13+. You NEVER give answers. You help students discover them through questions, doubt, and teach-back.
+You are a Socratic math guide (not a teacher), Acton Academy style, for learners age 13+. You NEVER give answers. You help students discover them through questions, doubt, and teach-back.
 
 HOW TO RESPOND
-• ✅ Only ask QUESTIONS or offer OPTIONS. Keep replies short (1–3 sentences).
+• ✅ Only ask QUESTIONS or offer OPTIONS. Replies are short (1–3 sentences).
 • ❌ Never say or imply “correct/incorrect” or “you’re right”.
 • ❌ Never explain unless asked directly.
-• ✅ Always nudge with things like:
-  – “Try it out!”  – “Want to test that with the graph?”  – “That might work—what makes you confident?”
-• If a student proposes an answer:
-  – Do NOT confirm. Ask for reasoning: “What step did you try first?” “What made you choose that?”
-  – Topic-specific nudges:
-    Graphs → “Does that point match the graph?”
-    Equations → “What’s your first move?”
-    Tables → “Are the numbers consistent?”
+• ✅ Nudge with: “Try it out!”, “Want to test that with the graph?”, “That might work—what makes you confident?”
+• If a student proposes an answer: do NOT confirm. Ask for reasoning: “What step did you try first?”, “What made you choose that?”
+  — Graphs → “Does that point match the graph?”
+  — Equations → “What’s your first move?”
+  — Tables → “Are the numbers consistent?”
 
 KHAN SCREENSHOT RULES
-• First check format: fraction vs decimal; which is x vs y; any graph present?
+• Check format: fraction vs decimal; which is x vs y; any graph present?
 • If graph: ask for a clear point; ask which axis is which; ask what happens with y/x (unit rate).
-• If the learner’s thinking is right but format is off: “Great thinking—does Khan want decimal or fraction?”
+• If thinking is right but format is off: “Great thinking—does Khan want decimal or fraction?”
 
 CHALLENGE LEVELS
-• Levels: 🐣 Apprentice (full beginner help), 🦸 Rising Hero (quick clarity), 🧠 Master (you lead).
-• Apprentice: go slow, define any needed terms, ask clear step-by-step questions, never give full answers, be patient.
-• Rising Hero: light support only (≤4 short sentences), ask one helpful question.
-• Master: say as little as possible; “What’s your first step?”
+• 🐣 Apprentice — slow, define needed terms, clear step-by-step questions, patient, never give full answers.
+• 🦸 Rising Hero — light support only (≤4 short sentences), ask one helpful question.
+• 🧠 Master — say as little as possible; “What’s your first step?”
 
-QUIZ STRATEGY (40 / 50 / 10)
-• If total_questions is known and level ∈ {Apprentice, Rising Hero} and the plan has not been announced:
-  Announce ONCE: “Here’s our plan 💪  40%: I’ll guide  •  50%: You teach me  •  10%: I’ll be quiet unless you ask.”
-• Ask the student to say when they start a new question so pacing matches the plan.
+QUIZ STRATEGY (40/50/10)
+• If total_questions is known and level ∈ {Apprentice, Rising Hero} and plan not yet announced:
+  Say ONCE: “Here’s our plan 💪  40%: I’ll guide • 50%: you teach me • 10%: I’ll be quiet unless you ask.”
+• Ask the learner to tell you when they start a new question so pacing matches the plan.
 
-ALWAYS START CHECK-IN (done client-side; do NOT re-ask if provided)
+ALWAYS-START CHECK-IN (handled client-side; do NOT re-ask if provided)
 • “How many total questions are in this exercise?”
 • “Which level do you want: Apprentice, Rising Hero, or Master?”
 
 MATH ACCURACY
-• Never guess. Compute carefully and consistently. If any arithmetic is needed, reason stepwise internally.
-• Match Khan’s requested format; double-check which number is x and which is y.
+• Never guess. Compute carefully. Match Khan’s requested format. Double-check which is x vs y.
 
 DOs & DON’Ts
-• ALWAYS: ask thoughtful questions; encourage reflection; match Khan format; let the student lead; track quiz progress; respond only with a question or options.
+• ALWAYS: ask thoughtful questions; encourage reflection; match format; let the learner lead; track quiz progress; respond only with a question or options.
 • NEVER: reveal the answer; say “correct”; identify exact graph coordinates; give away exact steps (e.g., “subtract 177 from 266”).
 
 ANCHORING (critical)
 • You will receive a Focus Anchor describing the current problem.
-• STAY on that focus; do not switch topics unless the learner clearly starts a new problem.
-• If the learner says “I don’t know”, keep the focus and ask a smaller, clarifying question or offer 2–3 options.
+• STAY on that focus; do not switch topics unless the learner clearly starts a new problem or says “new question/new problem”.
+• If the learner says “I don’t know”, keep the focus and ask a smaller clarifying question or offer 2–3 options.
 
 STYLE
 • Friendly, respectful, curious; never condescending.
-• Vary emojis (2 max) from: 🔎🧩✨💡✅🙌📘📐📊📝🎯🚀🧠📷🔧🌟🤔.
-• No equations in your reply and do not name operations explicitly.
+• Vary emojis (max 2) from: 🔎🧩✨💡✅🙌📘📐📊📝🎯🚀🧠📷🔧🌟🤔.
+• Do NOT write equations or name operations explicitly (avoid “add/subtract/multiply/divide”).
 """
 
 HARD_CONSTRAINT = (
     "Hard constraint: respond ONLY with questions or short option sets; "
     "no answers, no correctness, no equations, no operation names; "
-    "at most 1–2 sentences and one '?' if present; stay on the given focus."
+    "<= 2 sentences total and a single '?'; stay anchored to the provided focus."
 )
 
 # ---------- HEALTH ----------
@@ -89,7 +84,7 @@ HARD_CONSTRAINT = (
 def health():
     return "ok", 200
 
-# ---------- UI (white, centered title, one composer; in-chat onboarding; images) ----------
+# ---------- UI (white, centered title, simple bubbles; in-chat onboarding; images) ----------
 @app.get("/")
 def home():
     return """
@@ -140,11 +135,12 @@ def home():
 
     <div id="composer">
       <div id="left">
-        <textarea id="msg" placeholder="Send a screenshot or paste the problem. Say “new question” when you start the next one. (Shift+Enter = newline)"></textarea>
+        <textarea id="msg" placeholder="Send a screenshot or paste the problem. During setup, I’ll ask total questions and your level. (Shift+Enter = newline)"></textarea>
         <div id="drop">
           <label for="fileBtn">➕ Add images (PNG/JPG) — drag & drop or click</label>
           <input id="fileBtn" type="file" accept="image/*" multiple />
           <div id="thumbs"></div>
+          <small class="hint">Say “new question” when you move to the next, or “new problem” to reset focus.</small><br/>
           <small class="hint">Images are analyzed with your prompt (vision).</small>
         </div>
       </div>
@@ -162,17 +158,16 @@ const pwdBox = document.getElementById('password');
 const unlockBtn = document.getElementById('unlockBtn');
 const sendBtn = document.getElementById('sendBtn');
 const fileBtn = document.getElementById('fileBtn');
-const drop = document.getElementById('drop');
 const thumbs = document.getElementById('thumbs');
 
 let AUTH = '';
-// session state handled client-side to avoid loops
+// session state (client-side to avoid model loops)
 let LEVEL = '';
 let TOTAL = '';
 let CURRENT = 1;
 let PLAN_DONE = false;
 let FOCUS = '';
-let onboarding = 'total'; // total -> level -> done
+let onboarding = 'total'; // 'total' -> 'level' -> 'done'
 let queuedImages = [];
 
 function addBubble(who, text){
@@ -180,7 +175,7 @@ function addBubble(who, text){
   row.className = who === 'You' ? 'row me' : 'row bot';
   const b = document.createElement('div');
   b.className = 'bubble';
-  b.innerHTML = text.replace(/</g,'&lt;');
+  b.innerHTML = (text||'').replace(/</g,'&lt;');
   row.appendChild(b);
   chat.appendChild(row);
   chat.scrollTop = chat.scrollHeight;
@@ -205,7 +200,6 @@ function parseInt1(text){
   const m = (text||'').match(/\\d{1,3}/);
   return m ? parseInt(m[0],10) : null;
 }
-
 function pickLevel(text){
   const t = (text||'').toLowerCase();
   if(/apprentice/.test(t)) return 'Apprentice';
@@ -214,14 +208,14 @@ function pickLevel(text){
   return '';
 }
 
-// heuristics to set/refresh focus
+// heuristics for focus anchoring
 function looksLikeProblem(text){
   const hasNums = /\\d/.test(text||'');
   const longish = (text||'').length >= 16;
   const mathy = /(total|difference|sum|product|quotient|fraction|percent|rate|area|perimeter|slope|graph|table|equation|x|y)/i.test(text||'');
   return (hasNums && longish) || mathy;
 }
-function resetFocusMaybe(text, imgCount){
+function updateFocus(text, imgCount){
   if(/\\bnew question\\b|\\bnext question\\b/i.test(text||'')){ CURRENT = Math.max(1, CURRENT+1); return; }
   if(/\\bnew problem\\b/i.test(text||'')) { FOCUS = ''; return; }
   if(imgCount>0) { FOCUS = '(image problem)'; return; }
@@ -232,63 +226,32 @@ async function post(payload){
   const r = await fetch('/chat', {
     method:'POST',
     headers:{'Content-Type':'application/json','X-Auth':AUTH},
-    body: JSON.stringify({
-      ...payload,
-      level: LEVEL, total: TOTAL, current: CURRENT, plan_done: PLAN_DONE, focus: FOCUS
-    })
+    body: JSON.stringify({ ...payload, level: LEVEL, total: TOTAL, current: CURRENT, plan_done: PLAN_DONE, focus: FOCUS })
   });
   return r.json();
 }
 
 function addThumb(src){
-  const d = document.createElement('div');
-  d.className = 'thumb';
-  const img = document.createElement('img');
-  img.src = src;
-  d.appendChild(img);
+  const d = document.createElement('div'); d.className = 'thumb';
+  const img = document.createElement('img'); img.src = src; d.appendChild(img);
   thumbs.appendChild(d);
 }
 function fileToDataURL(file){
-  return new Promise((res, rej)=>{
-    const fr = new FileReader();
-    fr.onload = () => res(fr.result);
-    fr.onerror = rej;
-    fr.readAsDataURL(file);
-  });
+  return new Promise((res, rej)=>{ const fr = new FileReader(); fr.onload=()=>res(fr.result); fr.onerror=rej; fr.readAsDataURL(file); });
 }
 fileBtn.onchange = async (e)=>{
-  for(const f of e.target.files){
-    const dataURL = await fileToDataURL(f);
-    queuedImages.push(dataURL);
-    addThumb(dataURL);
-  }
+  for(const f of e.target.files){ const url = await fileToDataURL(f); queuedImages.push(url); addThumb(url); }
   fileBtn.value = '';
 };
-drop.addEventListener('dragover', (e)=>{ e.preventDefault(); drop.style.opacity = .9; });
-drop.addEventListener('dragleave', ()=>{ drop.style.opacity = 1; });
-drop.addEventListener('drop', async (e)=>{
-  e.preventDefault(); drop.style.opacity = 1;
-  const files = Array.from(e.dataTransfer.files || []);
-  for(const f of files){
-    if(!f.type.startsWith('image/')) continue;
-    const dataURL = await fileToDataURL(f);
-    queuedImages.push(dataURL);
-    addThumb(dataURL);
-  }
-});
 
 unlockBtn.onclick = async ()=>{
-  const pw = (pwdBox.value||'').trim();
-  if(!pw) return;
+  const pw = (pwdBox.value||'').trim(); if(!pw) return;
   addBubble('You','••••••••');
   const data = await post({ message: pw });
   addBubble('MathMate', data.reply ?? data.error ?? '(error)');
-  if(data.reply && data.reply.startsWith('🔓')){
-    AUTH = pw;
-    unlock.style.display='none';
-    composer.style.display='flex';
-    onboarding = 'total'; askOnboarding();
-    msgBox.focus();
+  if((data.reply||'').startsWith('🔓')){
+    AUTH = pw; unlock.style.display='none'; composer.style.display='flex';
+    onboarding = 'total'; askOnboarding(); msgBox.focus();
   }
 };
 
@@ -296,7 +259,7 @@ sendBtn.onclick = async ()=>{
   const text = (msgBox.value||'').trim();
   if(!text && queuedImages.length===0) return;
 
-  // onboarding first (handled locally, no model calls)
+  // Onboarding (client-side)
   if(onboarding !== 'done'){
     addBubble('You', text || '(image(s) only)');
     if(onboarding === 'total'){
@@ -306,35 +269,27 @@ sendBtn.onclick = async ()=>{
       msgBox.value=''; return;
     }
     if(onboarding === 'level'){
-      const lvl = pickLevel(text);
-      if(lvl){ LEVEL=lvl; onboarding='done'; CURRENT=1; PLAN_DONE=False=>false; askOnboarding(); }
+      const lv = pickLevel(text);
+      if(lv){ LEVEL=lv; onboarding='done'; CURRENT=1; PLAN_DONE = false; askOnboarding(); }
       else { addBubble('MathMate', "Please choose: Apprentice, Rising Hero, or Master. 🙂"); }
       msgBox.value=''; return;
     }
   }
 
-  // normal chat
-  resetFocusMaybe(text, queuedImages.length);
+  // Normal chat
+  updateFocus(text, queuedImages.length);
   addBubble('You', text || '(image(s) only)');
-  msgBox.value = '';
-  sendBtn.disabled = true;
+  msgBox.value = ''; sendBtn.disabled = true;
   try{
     const data = await post({ message: text, images: queuedImages });
     addBubble('MathMate', (data.reply ?? data.error ?? '(error)'));
   }finally{
-    sendBtn.disabled = false;
-    queuedImages = [];
-    thumbs.innerHTML = '';
-    msgBox.focus();
+    sendBtn.disabled = false; queuedImages = []; thumbs.innerHTML = ''; msgBox.focus();
   }
 };
 
-msgBox.addEventListener('keydown', (e)=>{
-  if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendBtn.click(); }
-});
-pwdBox.addEventListener('keydown', (e)=>{
-  if(e.key==='Enter'){ e.preventDefault(); unlockBtn.click(); }
-});
+msgBox.addEventListener('keydown', (e)=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendBtn.click(); }});
+pwdBox.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); unlockBtn.click(); }});
 </script>
 """
 
@@ -343,32 +298,30 @@ pwdBox.addEventListener('keydown', (e)=>{
 def chat():
     try:
         p = request.get_json(silent=True) or {}
-        text    = (p.get("message") or "").strip()
-        images  = p.get("images") or []
-        level   = (p.get("level") or "").strip()
-        total   = (p.get("total") or "").strip()
-        current = (p.get("current") or "").strip()
+        text      = (p.get("message") or "").strip()
+        images    = p.get("images") or []
+        level     = (p.get("level") or "").strip()
+        total     = (p.get("total") or "").strip()
+        current   = (p.get("current") or "").strip()
         plan_done = bool(p.get("plan_done", False))
-        focus  = (p.get("focus") or "").strip()
+        focus     = (p.get("focus") or "").strip()
 
-        if not text and not images:
-            return jsonify(error="Missing 'message' or 'images'"), 400
-
-        # auth
+        # --- SAFE UNLOCK: return early until password matches ---
         if request.headers.get("X-Auth", "") != PASSWORD:
             if text.lower() == PASSWORD.lower():
-                return jsonify(reply="🔓 Unlocked! Let’s set things up quick.")
-            return jsonify(reply="🔒 Please type the access password to begin.")
+                return jsonify(reply="🔓 Unlocked! Let’s set things up quick."), 200
+            return jsonify(reply="🔒 Please type the access password to begin."), 200
 
-        # user content (vision)
+        # Build user content (vision)
         user_content = []
         if text:
             user_content.append({"type": "text", "text": text})
-        for u in images:
-            user_content.append({"type": "image_url", "image_url": {"url": u}})
+        for url in images:
+            user_content.append({"type": "image_url", "image_url": {"url": url}})
         if not user_content:
             user_content = [{"type": "text", "text": "Please analyze the attached image problem."}]
 
+        # Session + focus directives
         session_line = (
             f"Session meta: level={level or 'unknown'}, total_questions={total or 'unknown'}, "
             f"current_question={current or 'unknown'}, plan_announced={'true' if plan_done else 'false'}. "
@@ -376,17 +329,17 @@ def chat():
         )
         plan_rule = ""
         if level and total and not plan_done and level.lower() in ("apprentice","rising hero","risinghero"):
-            plan_rule = "Announce the 40/50/10 plan ONCE now, then do not mention it again."
+            plan_rule = "Announce the 40/50/10 plan ONCE now, then never mention it again."
 
         focus_line = (
-            f"Focus Anchor: {focus or '(infer from the last user content)'} "
+            f"Focus Anchor: {focus or '(infer from the last learner content)'} "
             "Stay on this focus; do not switch topics unless the learner clearly starts a new problem or says 'new question/new problem'. "
             "If the learner says 'I don’t know', ask a smaller clarifying question or offer 2–3 options, but keep the same focus."
         )
 
         intensity_line = ""
         if (level or "").lower() == "rising hero":
-            intensity_line = "Style: Rising Hero — light support (≤4 short sentences), one helpful question."
+            intensity_line = "Style: Rising Hero — light support (≤4 short sentences), ask one helpful question."
         elif (level or "").lower() == "master":
             intensity_line = "Style: Master — minimal; ask as little as possible."
 
