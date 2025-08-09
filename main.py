@@ -1,30 +1,29 @@
 import os
-from flask import Flask, request, jsonify, session
+from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from openai import OpenAI
 
 load_dotenv()
 
-# --- Flask setup ---
+# --- Flask app ---
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-me")  # required for session cookies
 
-# --- OpenAI setup ---
+# --- Config ---
 OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is missing")
-
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 PASSWORD = os.getenv("MATHMATE_PASSWORD", "unlock-mathmate")
 DEBUG = os.getenv("DEBUG", "0") == "1"
 
+# --- OpenAI client ---
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 @app.get("/health")
 def health():
     return "ok", 200
 
-# --- tutor prompt ---
+# --- Tutor prompt ---
 MATHMATE_PROMPT = """
 🎯 MATHMATE – ACTON + KHAN ACADEMY AI GUIDE (COMPRESSED)
 - Socratic guide only: ask questions/options; never confirm correctness; never give final answers.
@@ -34,7 +33,7 @@ MATHMATE_PROMPT = """
 - Tone: respectful, encouraging, concise unless Apprentice is chosen.
 """
 
-# --- UI page ---
+# --- UI (ChatGPT-style, hides password after unlock) ---
 @app.get("/")
 def home():
     return """
@@ -48,7 +47,7 @@ def home():
   header{position:sticky;top:0;background:#0b1220;border-bottom:1px solid var(--border);padding:14px 18px;font-weight:700}
   main{display:flex;gap:16px;max-width:1000px;margin:0 auto;padding:16px}
   #chat{flex:1;min-height:60vh;max-height:70vh;overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px}
-  .row{margin:10px 0;line-height:1.45}
+  .row{margin:10px 0;line-height:1.5;white-space:pre-wrap}
   .me b{color:#93c5fd}
   .bot b{color:#86efac}
   .sys{color:var(--muted);font-style:italic}
@@ -56,7 +55,7 @@ def home():
   #pwdWrap{flex:1;display:flex;gap:8px}
   #password{flex:1;padding:12px;border-radius:12px;border:1px solid var(--border);background:#0f172a;color:var(--text)}
   #composer{display:none;flex:1;gap:8px}
-  textarea{flex:1;resize:vertical;min-height:90px;max-height:240px;padding:12px;border-radius:12px;border:1px solid var(--border);background:#0f172a;color:var(--text)}
+  textarea{flex:1;resize:vertical;min-height:100px;max-height:280px;padding:12px;border-radius:12px;border:1px solid var(--border);background:#0f172a;color:var(--text)}
   button{padding:12px 16px;border-radius:12px;border:1px solid var(--border);background:#111827;color:var(--text);cursor:pointer}
   button:disabled{opacity:.6;cursor:not-allowed}
 </style>
@@ -88,6 +87,8 @@ const pwdBox = document.getElementById('password');
 const unlockBtn = document.getElementById('unlockBtn');
 const sendBtn = document.getElementById('sendBtn');
 
+let AUTH = '';
+
 function addRow(who, text){
   const div = document.createElement('div');
   div.className = 'row ' + (who==='You'?'me':'bot');
@@ -99,7 +100,7 @@ function addRow(who, text){
 async function post(message){
   const r = await fetch('/chat', {
     method:'POST',
-    headers:{'Content-Type':'application/json'},
+    headers:{'Content-Type':'application/json', 'X-Auth': AUTH},
     credentials:'include',
     body: JSON.stringify({ message })
   });
@@ -110,9 +111,10 @@ unlockBtn.onclick = async () => {
   const pw = (pwdBox.value||'').trim();
   if(!pw) return;
   addRow('You', '••••••••');
-  const data = await post(pw);
+  const data = await post(pw); // send pw once to check
   addRow('MathMate', data.reply ?? data.error ?? '(error)');
   if(data.reply && data.reply.startsWith('🔓')){
+    AUTH = pw;                    // store for future requests
     pwdWrap.style.display = 'none';
     composer.style.display = 'flex';
     msgBox.focus();
@@ -146,24 +148,26 @@ pwdBox?.addEventListener('keydown', (e)=>{
 </script>
 """
 
-# --- Chat route ---
+# --- Single /chat endpoint with header-based auth ---
 @app.post("/chat")
 def chat():
     try:
         data = request.get_json(silent=True) or {}
         msg = (data.get("message") or "").strip()
-
         if not msg:
             return jsonify(error="Missing 'message'"), 400
 
-        # password gate
-        if not session.get("unlocked"):
+        auth = request.headers.get("X-Auth", "")
+
+        # If not authenticated yet, allow sending just the password to unlock
+        if auth != PASSWORD:
             if msg.lower() == PASSWORD.lower():
-                session["unlocked"] = True
-                return jsonify(reply="🔓 Unlocked! How many total questions are in this exercise, and which level: 🐣 Apprentice / 🦸 Rising Hero / 🧠 Master?")
+                return jsonify(
+                    reply="🔓 Unlocked! How many total questions are in this exercise, and which level: 🐣 Apprentice / 🦸 Rising Hero / 🧠 Master?"
+                )
             return jsonify(reply="🔒 Please type the access password to begin.")
 
-        # tutoring
+        # Auth OK → go to model
         completion = client.chat.completions.create(
             model=MODEL,
             temperature=0.2,
@@ -176,12 +180,12 @@ def chat():
         return jsonify(reply=reply)
 
     except Exception as e:
-        app.logger.exception("Chat route crashed")
         if DEBUG:
             return jsonify(error=f"Server error: {type(e).__name__}: {e}"), 500
         return jsonify(error="Server error"), 500
 
-# --- local run ---
+# --- Local run ---
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
+
