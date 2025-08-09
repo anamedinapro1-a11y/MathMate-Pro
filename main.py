@@ -19,7 +19,7 @@ DEBUG    = os.getenv("DEBUG", "0") == "1"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ---------- MATHMATE PROMPT (your rules + anchoring + guardrails) ----------
+# ---------- MATHMATE PROMPT ----------
 MATHMATE_PROMPT = """
 🎯 MATHMATE – ACTON + KHAN ACADEMY AI GUIDE (Socratic)
 
@@ -84,7 +84,7 @@ HARD_CONSTRAINT = (
 def health():
     return "ok", 200
 
-# ---------- UI (white, centered title, simple bubbles; in-chat onboarding; images) ----------
+# ---------- UI ----------
 @app.get("/")
 def home():
     return """
@@ -135,7 +135,7 @@ def home():
 
     <div id="composer">
       <div id="left">
-        <textarea id="msg" placeholder="Send a screenshot or paste the problem. During setup, I’ll ask total questions and your level. (Shift+Enter = newline)"></textarea>
+        <textarea id="msg" placeholder="Send a screenshot or paste the problem. During setup I’ll ask total questions and your level. (Shift+Enter = newline)"></textarea>
         <div id="drop">
           <label for="fileBtn">➕ Add images (PNG/JPG) — drag & drop or click</label>
           <input id="fileBtn" type="file" accept="image/*" multiple />
@@ -361,9 +361,10 @@ def chat():
         return jsonify(reply=completion.choices[0].message.content)
 
     except Exception as e:
-        if DEBUG:
-            return jsonify(error=f"{type(e).__name__}: {e}"), 500
-        return jsonify(error="Server error"), 500
+        # Show real error to help fix fast (toggle with DEBUG if you prefer)
+        err = f"{type(e).__name__}: {e}"
+        app.logger.exception("Chat crashed: %s", err)
+        return jsonify(error=err if DEBUG else "Server error"), 500
 
 # ---------- LOCAL RUN ----------
 if __name__ == "__main__":
