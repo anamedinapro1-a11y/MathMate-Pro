@@ -19,17 +19,17 @@ DEBUG    = os.getenv("DEBUG", "0") == "1"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ---------- TUTOR PROMPT (micro-lesson + one-question) ----------
+# ---------- TUTOR PROMPT (micro-lesson + one question; levels only) ----------
 MATHMATE_PROMPT = """
 MATHMATE — SOCRATIC TUTOR (Acton + Khan) with MICRO-LESSONS
 
 GLOBAL RULES (every turn)
-• Teach-while-asking: start with a tiny MICRO-LESSON (transferable idea, definition, tip, pattern, or common mistake), then ask ONE question.
-• Micro-lesson is short and reusable; do not solve the problem.
-• One-Question Rule: ask EXACTLY ONE question (1 sentence). No multi-steps, no lists.
+• Teach-while-asking: begin with a tiny MICRO-LESSON (transfer idea, pattern, definition, tip, or common pitfall), then ask ONE question.
+• Micro-lesson is short and reusable; it must NOT solve the problem. No question marks in the micro-lesson.
+• One-Question Rule: ask EXACTLY ONE question (1 sentence). No lists. No multi-steps.
 • Never reveal an operation name and never write an equation. Do NOT say add/subtract/multiply/divide, and do NOT write expressions like 19−5.
 • Never give the final answer. Never say correct/incorrect. Use neutral acks (“got it”, “noted”) and move on.
-• No meta rambling (don’t repeat the plan or “I’m here to help”). Teach → ask.
+• Keep meta minimal (don’t repeat setup). Teach → ask.
 • Style: friendly, concise, 2–3 varied emojis (pool: 🔎🧩✨💡✅🙌📘📐📊📝🎯🚀🧠📷🔧🌟🤔).
 • Images: briefly say what you SEE (axes, labels, units, fractions/decimals) in a phrase, then micro-lesson + ONE question.
 
@@ -38,23 +38,18 @@ LEVELS
 • Rising Hero: micro-lesson only if needed (≤1 sentence). Light nudge.
 • Master: minimal. No micro-lesson unless asked.
 
-SESSION & PLANNING
-• You will receive session meta: level, total_questions, current_question, plan_already_announced.
-• If level/total are provided, NEVER ask for them again.
-• If level is Apprentice or Rising Hero and plan_already_announced is false: announce ONCE
-  “I’ll guide ~40%, you’ll teach back ~50%, last 10% I’ll be here for questions.” (one short sentence + 1–2 emojis), then continue. Never repeat it.
-• If level is Master: say “Okay.” once and go minimal thereafter.
-• Use current_question to pace. If it is “unknown”, ask ONCE: “Which question number are we on now?” and then wait.
+SESSION
+• You will receive: level. If level is present, NEVER ask for it again. Start tutoring immediately.
 
 OUTPUT SHAPE
-• MICRO-LESSON (0–2 short sentences depending on level) → ONE question ending with “?”.
+• MICRO-LESSON (0–2 short statements depending on level) → ONE question ending with “?”.
 • You may include up to 3 short options like “A) …  B) …  C) …”.
 • Absolutely no equations and no operation names.
 """
 
 HARD_CONSTRAINT = (
-    "Hard constraint: output a micro-lesson first (0–2 short sentences, per level), "
-    "then EXACTLY ONE question (1 sentence). Total ≤ 3 sentences, with only one '?'. "
+    "Hard constraint: output a micro-lesson first (0–2 short statements, no '?'), "
+    "then EXACTLY ONE question (1 sentence) — total ≤ 3 sentences and only one '?'. "
     "No equations. No operation names."
 )
 
@@ -63,7 +58,7 @@ HARD_CONSTRAINT = (
 def health():
     return "ok", 200
 
-# ---------- UI (white theme, centered title, bubbles; single composer; guided onboarding) ----------
+# ---------- UI (white theme, centered title, bubbles; single composer; asks only for level) ----------
 @app.get("/")
 def home():
     return """
@@ -140,13 +135,9 @@ const drop = document.getElementById('drop');
 const thumbs = document.getElementById('thumbs');
 
 let AUTH = '';
-// session state managed client-side to avoid model loops
-let LEVEL = '';
-let TOTAL = '';
-let CURRENT = '';
-let PLAN_DONE = false;
-let ONBOARD = 'level'; // 'level' -> 'total' -> 'current' -> 'done'
+let LEVEL = '';      // Apprentice | Rising Hero | Master
 let queuedImages = [];
+let onboarding = true; // ask for level once after unlock
 
 function addBubble(who, text){
   const row = document.createElement('div');
@@ -159,21 +150,8 @@ function addBubble(who, text){
   chat.scrollTop = chat.scrollHeight;
 }
 
-function askNextOnboard(){
-  if(ONBOARD === 'level'){
-    addBubble('MathMate', "Which level should we use—🐣 Apprentice, 🦸 Rising Hero, or 🧠 Master?");
-  } else if(ONBOARD === 'total'){
-    addBubble('MathMate', "How many total questions are in this exercise? 📘");
-  } else if(ONBOARD === 'current'){
-    addBubble('MathMate', "Which question number are we on right now? 📝");
-  } else if(ONBOARD === 'done'){
-    if((LEVEL==='Apprentice' || LEVEL==='Rising Hero') && !PLAN_DONE){
-      addBubble('MathMate', "I’ll guide ~40%, you’ll teach back ~50%, last 10% I’ll be here for questions. ✨");
-      PLAN_DONE = true;
-    } else if(LEVEL === 'Master'){
-      addBubble('MathMate', "Okay. 😊");
-    }
-  }
+function askLevel(){
+  addBubble('MathMate', "Which level should we use—🐣 Apprentice, 🦸 Rising Hero, or 🧠 Master?");
 }
 
 function parseLevel(text){
@@ -183,19 +161,12 @@ function parseLevel(text){
   if(/master/.test(t)) return 'Master';
   return '';
 }
-function parseIntStr(text){
-  const m = text.match(/\\d{1,3}/);
-  return m ? String(parseInt(m[0],10)) : '';
-}
 
 async function post(payload){
   const r = await fetch('/chat', {
     method:'POST',
     headers:{'Content-Type':'application/json','X-Auth':AUTH},
-    body: JSON.stringify({
-      ...payload,
-      level: LEVEL, total: TOTAL, current: CURRENT, plan_done: PLAN_DONE
-    })
+    body: JSON.stringify({ ...payload, level: LEVEL })
   });
   return r.json();
 }
@@ -247,9 +218,8 @@ unlockBtn.onclick = async ()=>{
     AUTH = pw;
     unlock.style.display='none';
     composer.style.display='flex';
-    // start onboarding questions (in-chat, no commands)
-    ONBOARD = 'level';
-    askNextOnboard();
+    onboarding = true;
+    askLevel();
     msgBox.focus();
   }
 };
@@ -258,30 +228,22 @@ sendBtn.onclick = async ()=>{
   let text = (msgBox.value||'').trim();
   if(!text && queuedImages.length===0) return;
 
-  // --- handle onboarding locally (no model) ---
-  if(ONBOARD !== 'done'){
-    addBubble('You', text || '(image(s) only)');
-    if(ONBOARD === 'level'){
-      const lvl = parseLevel(text);
-      if(lvl){ LEVEL = lvl; ONBOARD = 'total'; askNextOnboard(); }
-      else { addBubble('MathMate', "Please choose: Apprentice, Rising Hero, or Master. 🙂"); }
-      msgBox.value = ''; return;
+  // Onboarding: capture level ONCE locally (no model call)
+  if(onboarding){
+    addBubble('You', text);
+    const lvl = parseLevel(text);
+    if(lvl){
+      LEVEL = lvl;
+      onboarding = false;
+      addBubble('MathMate', `Great — we’ll use **${LEVEL}** mode. Send your first problem or a photo when you're ready. ✨`);
+    }else{
+      addBubble('MathMate', "Please choose: Apprentice, Rising Hero, or Master. 🙂");
     }
-    if(ONBOARD === 'total'){
-      const n = parseIntStr(text);
-      if(n){ TOTAL = n; ONBOARD = 'current'; askNextOnboard(); }
-      else { addBubble('MathMate', "Type a number like 7, 10, or 15. 📘"); }
-      msgBox.value = ''; return;
-    }
-    if(ONBOARD === 'current'){
-      const n = parseIntStr(text);
-      if(n){ CURRENT = n; ONBOARD = 'done'; askNextOnboard(); }
-      else { addBubble('MathMate', "Type a number like 1 or 2 to set the current question. 📝"); }
-      msgBox.value = ''; return;
-    }
+    msgBox.value = '';
+    return;
   }
 
-  // --- normal chat (send to model) ---
+  // Normal chat
   addBubble('You', text || '(image(s) only)');
   msgBox.value = '';
   sendBtn.disabled = true;
@@ -305,17 +267,14 @@ pwdBox.addEventListener('keydown', (e)=>{
 </script>
 """
 
-# ---------- CHAT (vision + session meta) ----------
+# ---------- CHAT (vision + level meta) ----------
 @app.post("/chat")
 def chat():
     try:
         p = request.get_json(silent=True) or {}
-        text    = (p.get("message") or "").strip()
-        images  = p.get("images") or []
-        level   = (p.get("level") or "").strip()
-        total   = (p.get("total") or "").strip()
-        current = (p.get("current") or "").strip()
-        plan_done = bool(p.get("plan_done", False))
+        text   = (p.get("message") or "").strip()
+        images = p.get("images") or []
+        level  = (p.get("level") or "").strip()
 
         if not text and not images:
             return jsonify(error="Missing 'message' or 'images'"), 400
@@ -323,7 +282,7 @@ def chat():
         # Auth gate
         if request.headers.get("X-Auth", "") != PASSWORD:
             if text.lower() == PASSWORD.lower():
-                return jsonify(reply="🔓 Unlocked! Let’s set things up quickly.")
+                return jsonify(reply="🔓 Unlocked! Let’s pick your level to start.")
             return jsonify(reply="🔒 Please type the access password to begin.")
 
         # Build user content (vision)
@@ -336,20 +295,9 @@ def chat():
             user_content = [{"type": "text", "text": "Please analyze the attached image problem."}]
 
         session_line = (
-            f"Session meta: level={level or 'unknown'}; total_questions={total or 'unknown'}; "
-            f"current_question={current or 'unknown'}; plan_already_announced={'true' if plan_done else 'false'}. "
-            "If level and total are present, do not ask for them again."
+            f"Session meta: level={level or 'unknown'}. "
+            "If level is present, do not ask for it again; start tutoring immediately."
         )
-
-        planning_line = ""
-        if level and total:
-            if level.lower() in ("apprentice", "rising hero", "risinghero"):
-                planning_line = (
-                    "If plan_already_announced is false, announce the 40/50/10 plan exactly once now; "
-                    "after that, never mention it again."
-                )
-            else:
-                planning_line = "If level is Master, just say 'Okay.' once when starting, then be minimal."
 
         apprentice_define_rule = ""
         if (level or "").lower() == "apprentice":
@@ -357,12 +305,17 @@ def chat():
                 "Apprentice rule: when you use a precise math term, include a brief 2–6 word "
                 "parenthetical definition on its FIRST appearance this session; do not repeat unless asked."
             )
+        intensity_line = ""
+        if (level or "").lower() == "rising hero":
+            intensity_line = "Rising Hero style: give a tiny micro-lesson only if needed; one light nudge."
+        elif (level or "").lower() == "master":
+            intensity_line = "Master style: minimal; no micro-lesson unless asked; one tiny question."
 
         messages = [
             {"role": "system", "content": MATHMATE_PROMPT},
             {"role": "system", "content": session_line},
-            {"role": "system", "content": planning_line},
             {"role": "system", "content": apprentice_define_rule},
+            {"role": "system", "content": intensity_line},
             {"role": "system", "content": HARD_CONSTRAINT},
             {"role": "user", "content": user_content},
         ]
