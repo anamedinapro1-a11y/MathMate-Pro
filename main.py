@@ -1,20 +1,27 @@
 import os
+import re
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from openai import OpenAI
 
 load_dotenv()
 
-# -------------------- App & Config --------------------
 app = Flask(__name__)
 
-OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
+# --- CONFIG ----------------------------------------------------
+def clean_key(k: str) -> str:
+    # remove ALL whitespace anywhere (spaces, tabs, newlines)
+    return re.sub(r"\s+", "", (k or ""))
+
+RAW_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_API_KEY = clean_key(RAW_KEY)
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is missing")
 
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # vision-capable
+MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")     # vision-capable
 PASSWORD = os.getenv("MATHMATE_PASSWORD", "unlock-mathmate")
-DEBUG = os.getenv("DEBUG", "0") == "1"
+# keep DEBUG on until it works; then set DEBUG=0 or remove
+DEBUG = os.getenv("DEBUG", "1") == "1"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -22,7 +29,7 @@ MATHMATE_PROMPT = """
 🎯 MATHMATE – ACTON + KHAN ACADEMY AI GUIDE (COMPRESSED)
 - Socratic guide only: ask questions/options; never confirm correctness; never give final answers.
 - Levels: Apprentice (slow, define terms, step-by-step), Rising Hero (short nudge), Master (student leads).
-- For image problems: first describe what you see (axes, labels, units, fractions/decimals), then ask 1 clarifying question before proceeding.
+- For image problems: first describe what you see (axes, labels, units, fractions/decimals), then ask 1 clarifying question.
 - Quiz flow: ask total # of questions; plan 40% guide / 50% teach-back / 10% hands-off; announce each question.
 - Tone: respectful, encouraging, concise unless Apprentice is chosen.
 """
@@ -31,7 +38,6 @@ MATHMATE_PROMPT = """
 def health():
     return "ok", 200
 
-# -------------------- UI --------------------
 @app.get("/")
 def home():
     return """
@@ -67,9 +73,7 @@ def home():
 
 <header>🔒 MathMate Pro</header>
 <main>
-  <div id="chat">
-    <div class="row sys">Type the password to unlock.</div>
-  </div>
+  <div id="chat"><div class="row sys">Type the password to unlock.</div></div>
 </main>
 
 <div id="panel">
@@ -105,7 +109,7 @@ const drop = document.getElementById('drop');
 const thumbs = document.getElementById('thumbs');
 
 let AUTH = '';
-let queuedImages = []; // data URLs
+let queuedImages = [];
 
 function addRow(who, text){
   const div = document.createElement('div');
@@ -125,12 +129,12 @@ async function post(payload){
 }
 
 function addThumb(src){
-  const wrapper = document.createElement('div');
-  wrapper.className = 'thumb';
+  const d = document.createElement('div');
+  d.className = 'thumb';
   const img = document.createElement('img');
   img.src = src;
-  wrapper.appendChild(img);
-  thumbs.appendChild(wrapper);
+  d.appendChild(img);
+  thumbs.appendChild(d);
 }
 
 function fileToDataURL(file){
@@ -168,7 +172,7 @@ unlockBtn.onclick = async ()=>{
   const pw = (pwdBox.value||'').trim();
   if(!pw) return;
   addRow('You','••••••••');
-  const data = await post({ message: pw });   // try password
+  const data = await post({ message: pw });
   addRow('MathMate', data.reply ?? data.error ?? '(error)');
   if(data.reply && data.reply.startsWith('🔓')){
     AUTH = pw;
@@ -181,29 +185,22 @@ unlockBtn.onclick = async ()=>{
 sendBtn.onclick = async ()=>{
   const text = (msgBox.value||'').trim();
   if(!text && queuedImages.length===0) return;
-
   addRow('You', text || '(image(s) only)');
   msgBox.value = '';
   sendBtn.disabled = true;
-
   try{
     const data = await post({ message: text, images: queuedImages });
     addRow('MathMate', (data.reply ?? data.error ?? '(error)'));
   }finally{
     sendBtn.disabled = false;
-    // clear images after sending
     queuedImages = [];
     thumbs.innerHTML = '';
     msgBox.focus();
   }
 };
 
-// enter to send; shift+enter newline
 msgBox.addEventListener('keydown', (e)=>{
-  if(e.key==='Enter' && !e.shiftKey){
-    e.preventDefault();
-    sendBtn.click();
-  }
+  if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendBtn.click(); }
 });
 pwdBox.addEventListener('keydown', (e)=>{
   if(e.key==='Enter'){ e.preventDefault(); unlockBtn.click(); }
@@ -211,35 +208,29 @@ pwdBox.addEventListener('keydown', (e)=>{
 </script>
 """
 
-# -------------------- Chat (supports images) --------------------
 @app.post("/chat")
 def chat():
     try:
-        data = request.get_json(silent=True) or {}
-        text = (data.get("message") or "").strip()
-        images = data.get("images") or []  # list of data URLs (e.g., "data:image/png;base64,...")
+        payload = request.get_json(silent=True) or {}
+        text = (payload.get("message") or "").strip()
+        images = payload.get("images") or []
 
         if not text and not images:
             return jsonify(error="Missing 'message' or 'images'"), 400
 
-        auth = request.headers.get("X-Auth", "")
-
-        # Unlock flow: if not authorized, only accept the password as the text message
-        if auth != PASSWORD:
+        if request.headers.get("X-Auth", "") != PASSWORD:
             if text.lower() == PASSWORD.lower():
                 return jsonify(reply="🔓 Unlocked! How many total questions are in this exercise, and which level: 🐣 Apprentice / 🦸 Rising Hero / 🧠 Master?")
             return jsonify(reply="🔒 Please type the access password to begin.")
 
-        # Build a vision-aware message
         user_content = []
         if text:
             user_content.append({"type": "text", "text": text})
         for url in images:
-            # Send the data URL directly; OpenAI supports "image_url" with base64 data URLs
             user_content.append({"type": "image_url", "image_url": {"url": url}})
 
         if not user_content:
-            user_content = [{"type": "text", "text": "Please analyze the attached image problem step-by-step."}]
+            user_content = [{"type": "text", "text": "Please analyze the attached image problem."}]
 
         completion = client.chat.completions.create(
             model=MODEL,
@@ -249,15 +240,12 @@ def chat():
                 {"role": "user", "content": user_content},
             ],
         )
-        reply = completion.choices[0].message.content
-        return jsonify(reply=reply)
+        return jsonify(reply=completion.choices[0].message.content)
 
     except Exception as e:
-        if DEBUG:
-            return jsonify(error=f"Server error: {type(e).__name__}: {e}"), 500
-        return jsonify(error="Server error"), 500
+        # Always show the real error while we stabilize
+        return jsonify(error=f"{type(e).__name__}: {e}"), 500
 
-# -------------------- Local run --------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
