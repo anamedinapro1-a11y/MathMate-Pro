@@ -3,10 +3,11 @@ from flask import Flask, request, jsonify, session
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# --- env & app ---
 load_dotenv()
-app = Flask(__name__)
-app.secret_key = os.getenv("SESSION_SECRET", "change-me-please")
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+client = OpenAI(api_key=OPENAI_API_KEY)
+
 
 PASSWORD = os.getenv("MATHMATE_PASSWORD", "unlock-mathmate")
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -101,6 +102,7 @@ def chat():
     except Exception:
         app.logger.exception("Chat route crashed")
         return jsonify(error="Server error"), 500
+
 
 # --- local run (Railway/Gunicorn will ignore this) ---
 if __name__ == "__main__":
