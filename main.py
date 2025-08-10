@@ -30,10 +30,7 @@ def _session_key(level: str, focus: str, grade: str, auth: str) -> str:
 
 def remember_micro(level: str, focus: str, grade: str, auth: str, micro: str):
     key = _session_key(level, focus, grade, auth)
-    d = MEM.get(key, {})
-    d["last_micro"] = (micro or "").strip()
-    d["ts"] = time.time()
-    MEM[key] = d
+    MEM[key] = {"last_micro": (micro or "").strip(), "last_sig": MEM.get(key, {}).get("last_sig",""), "ts": time.time()}
 
 def last_micro(level: str, focus: str, grade: str, auth: str) -> str:
     return (MEM.get(_session_key(level, focus, grade, auth)) or {}).get("last_micro", "")
@@ -51,8 +48,8 @@ def last_sig(level: str, focus: str, grade: str, auth: str) -> str:
 # ---------- GRADE BANDS ----------
 def grade_band(grade: str) -> str:
     """
-    Returns one of: K-2, 3-5, 6-8, 9-12
-    Accepts strings like 'K', '2', '2nd', 'grade 7', '11', etc.
+    Returns: K-2, 3-5, 6-8, 9-12
+    Accepts 'K', '2', '2nd', 'grade 7', '11', etc.
     """
     g = (grade or "").strip().lower()
     if g in {"k", "kindergarten", "kg"}:
@@ -88,23 +85,20 @@ LEVELS
 • Rising Hero — one short nudge if needed, then ONE question.
 • Master — minimal; ask ONE question only.
 
-OUTPUT SHAPE
-• Micro-lesson (0–2 brief statements) and/or scaffolding (≤2 lines) → EXACTLY ONE question (one “?” total).
-• Avoid explicit operation names (add/subtract/multiply/divide) and avoid equations or operator symbols.
+OPERATIONS POLICY
+• You MAY use operation names (add, subtract, multiply, divide), but ONLY inside a QUESTION or as OPTIONS; do not issue commands or compute.
+• Avoid writing equations; focus on reasoning and format choices.
 """
 
 GUIDE_RULES = """
 RESPONDING
 • Aside from the tiny micro-lesson/scaffold lines, respond ONLY with QUESTIONS or concise OPTION lists.
-• Do not give final answers or explicit arithmetic instructions.
+• Do not give final answers or explicit calculations.
 
 WHEN THE LEARNER PROPOSES AN ANSWER
 • Make a best-effort internal judgment: LIKELY_OK vs LIKELY_OFF (do not reveal the judgment).
 • If LIKELY_OK: start with “✅ Try it.” then a reflective question.
 • If LIKELY_OFF/UNCLEAR: do NOT encourage entering it; start with “Mmm, let’s review the steps.” or “Let’s check again—” then a guiding question.
-
-FORMAT/SCREENSHOTS
-• Ask early: “fraction or decimal?”, “which is x and which is y?”, “is there a graph — can you find a clear point?”, “what happens when you divide y by x?”
 
 HIDDEN TAG (required)
 • Append exactly [[LIKELY_OK]] or [[LIKELY_OFF]] at the end of EVERY reply, based on your private judgment about any just-proposed value; if no value was proposed, use [[LIKELY_OFF]]. Do not explain this tag.
@@ -113,7 +107,7 @@ HIDDEN TAG (required)
 HARD_CONSTRAINT = (
     "Hard constraint: micro-lesson first (0–2 short statements), optionally 1–2 scaffold lines (natural verbs only), "
     "then EXACTLY ONE question (one '?'). ≤4 sentences total (≤3 for K-2). "
-    "Avoid operation names and equations. Stay anchored to the provided focus."
+    "Operations allowed only in questions/options. No equations. Stay anchored to the provided focus."
 )
 
 # ---------- HUMAN-LIKE PHRASE BANKS ----------
@@ -161,39 +155,45 @@ _ANSWER_PH = re.compile(r"\b(the answer is|therefore|thus|equals|so you get)\b",
 _TAG_OK    = "[[LIKELY_OK]]"
 _TAG_OFF   = "[[LIKELY_OFF]]"
 
-# --- Grammar-aware operation rewrites (natural English) ---
-def _normalize_ops_phrasing(text: str) -> str:
-    text = re.sub(
-        r"\b(subtract)\s+([^\.?\n]+?)\s+(from)\s+([^\.?\n]+?)([\.\?!])",
-        lambda m: f"find the difference between {m.group(4)} and {m.group(2)}{m.group(5)}",
-        text,
-        flags=re.I,
-    )
-    text = re.sub(
-        r"\b([A-Za-z0-9 _]+?)\s+minus\s+([A-Za-z0-9 _]+?)\b",
-        r"the difference between \1 and \2",
-        text,
-        flags=re.I,
-    )
-    repl = {
-        r"\badd\b": "combine",
-        r"\bplus\b": "combine",
-        r"\bmultiply\b": "scale",
-        r"\btimes\b": "scale",
-        r"\bdivide\b": "compare as a rate",
-        r"\bdivided\s+by\b": "compare as a rate",
-        r"\bover\b": "compare as a rate",
-    }
-    for pat, rpl in repl.items():
-        text = re.sub(pat, rpl, text, flags=re.I)
-    q_idx = text.rfind("?")
-    if q_idx != -1:
-        before = text[:q_idx]
-        question = text[q_idx-220 if q_idx-220>0 else 0:q_idx+1]
-        if re.search(r"\b(\d+)\s*(minus|plus|times|divided\s+by|over)\s*(\d+)\b", question, re.I):
-            question = "How many more (or fewer) is that?"
-            text = (before.strip() + " " + question).strip()
-    return re.sub(r"\s{2,}", " ", text).strip()
+# ---- Apprentice Options Generator ----
+def _needs_options(text: str) -> bool:
+    return not re.search(r"(^|\n)\s*(A\)|B\)|•|-)\s+", text)
+
+def _op_options_for_focus(focus: str, band: str) -> str:
+    f = (focus or "").lower()
+    if any(w in f for w in ["fewer", "more", "less", "difference", "compare", "how many left"]):
+        return "A) Add  B) Subtract"
+    if any(w in f for w in ["groups of", "each has", "same size groups", "area", "rectangle", "times"]):
+        return "A) Add repeatedly  B) Multiply"
+    if any(w in f for w in ["per", "each", "rate", "split", "share", "equal groups", "average"]):
+        return "A) Multiply  B) Divide"
+    # general default
+    return "A) Add  B) Subtract  C) Multiply  D) Divide"
+
+# ---- Operation phrasing guard: allow ops only as questions/options ----
+_OP_WORDS = re.compile(r"\b(add|plus|sum|subtract|minus|difference|multiply|times|product|divide|divided\s+by|over|quotient)\b", re.I)
+
+def _ops_must_be_questions_or_options(text: str, focus: str, level: str, band: str) -> str:
+    """
+    If operation words appear but there's no options and the sentence isn't a question yet,
+    convert the tail into a single question and append options.
+    """
+    t = text.strip()
+    contains_ops = bool(_OP_WORDS.search(t))
+    has_q = "?" in t
+    if contains_ops and not has_q:
+        # make a gentle single question
+        if any(w in (focus or "").lower() for w in ["fewer", "less", "difference", "compare", "left"]):
+            q = "Would subtract or add fit best here?"
+        elif any(w in (focus or "").lower() for w in ["per", "each", "rate", "share", "split"]):
+            q = "Would multiply or divide make more sense?"
+        else:
+            q = "Which operation do you think fits here?"
+        t = (t.rstrip(".!…") + " " + q).strip()
+    # add options if needed (esp. Apprentice)
+    if (level or "").lower() == "apprentice" and _needs_options(t):
+        t += "\n" + _op_options_for_focus(focus, band)
+    return t
 
 def _split_micro_and_question(text: str):
     q_idx = text.rfind("?")
@@ -246,31 +246,10 @@ def _pick_scaffold(level: str, band: str, seed: str) -> str:
         second = _pick(SCAFFOLD_UP_NEXT, "next-"+seed)
     return f"{first} {second}"
 
-# ---- Apprentice Options Generator ----
-def _needs_options(text: str) -> bool:
-    # no options present yet?
-    return not re.search(r"(^|\n)\s*(A\)|B\)|•|-)\s+", text)
-
-def _build_options(focus: str, band: str) -> str:
-    f = (focus or "").lower()
-    # very light inference
-    if any(w in f for w in ["fewer", "more", "less", "difference", "compare"]):
-        if band == "K-2":
-            return "A) Add (put together)  B) Find the difference (how many more/less)"
-        return "A) Combine the amounts  B) Find the difference"
-    if any(w in f for w in ["rate", "per", "each", "speed", "ratio"]):
-        return "A) Combine counts  B) Compare as a rate"
-    if any(w in f for w in ["graph", "point", "slope", "line"]):
-        return "A) Pick a clear point  B) Match x and y"
-    # default general choices
-    if band == "K-2":
-        return "A) Add (put together)  B) Find the difference"
-    return "A) Combine the amounts  B) Compare how much more/less"
-
 def enforce_mathmate_style(text: str, level: str, focus: str, grade: str, auth: str, user_answer_like: bool) -> str:
     band = grade_band(grade)
 
-    # 1) read + strip hidden tag
+    # hidden tag
     tag = "OFF"
     if text and _TAG_OK in text:
         tag, text = "OK", text.replace(_TAG_OK, "")
@@ -278,39 +257,36 @@ def enforce_mathmate_style(text: str, level: str, focus: str, grade: str, auth: 
         tag, text = "OFF", text.replace(_TAG_OFF, "")
     t = (text or "").strip()
 
-    # 2) remove confirmations/answer-y phrases
+    # clean confirmations / answer-y claims; hide equations/operators
     t = _CONFIRM_WORDS.sub(" ", t)
     t = _ANSWER_PH.sub("What makes you confident", t)
-
-    # 3) grammar-aware rewrite BEFORE masking symbols
-    t = _normalize_ops_phrasing(t)
-
-    # 4) mask explicit arithmetic symbols & coords
     t = _EQN_BITS.sub("…", t)
     t = _COORDS.sub("that point", t)
 
-    # 5) de-dupe micro-lesson within focus
+    # de-dupe micro-lesson
     micro, question = _split_micro_and_question(t)
     prev_micro = last_micro(level, focus, grade, auth)
     if micro and prev_micro and micro.strip().lower() == prev_micro.strip().lower():
         t = question or "What would you try next?"
     else:
-        if micro:
-            remember_micro(level, focus, grade, auth, micro)
+        if micro: remember_micro(level, focus, grade, auth, micro)
 
-    # 6) Apprentice scaffolding (grade-aware)
+    # Apprentice scaffolding (grade-aware)
     if (level or "").lower() == "apprentice":
         if not re.search(r"\bfirst\b|\bthen\b|\bstart\b|\bbegin\b|\bstep\b", t, re.I):
             t = (_pick_scaffold(level, band, focus) + " " + t).strip()
 
-    # 7) K-2 simplifier
+    # Grade simplifier
     if band == "K-2":
         t = _simplify_for_k2(t)
 
-    # 8) shape & one-question rule (grade-aware sentence cap)
+    # Ensure ops only as questions/options (and add options when needed)
+    t = _ops_must_be_questions_or_options(t, focus, level, band)
+
+    # shape & one-question rule
     t = _limit_form(t, band)
 
-    # 9) Answer encouragement policy (ONLY if learner proposed a lone value)
+    # Answer encouragement policy (ONLY if learner proposed a lone value)
     if user_answer_like:
         if tag == "OK":
             if not t.lstrip().startswith("✅ Try it"):
@@ -319,21 +295,15 @@ def enforce_mathmate_style(text: str, level: str, focus: str, grade: str, auth: 
             if not (t.lstrip().startswith("Mmm, let’s review the steps.") or t.lstrip().startswith("Let's check again—") or t.lstrip().startswith("Let’s step back for a sec.") ):
                 t = _pick(REVIEW_PROMPTS, focus) + " " + t
 
-    # 10) Apprentice: ensure OPTIONS are present (without adding extra '?')
-    if (level or "").lower() == "apprentice" and _needs_options(t):
-        opts = _build_options(focus, band)
-        # add as a new line; no '?' added
-        t = f"{t}\n{opts}"
-
-    # 11) ensure one question or options
+    # Ensure we end with a question or options visible
     if "?" not in t and not re.search(r"(^|\n)\s*(A\)|B\)|•|-)\s+", t):
         t = t.rstrip(".!…") + " — what would you try next?"
 
-    # 12) avoid identical back-to-back bot outputs
+    # reduce exact repeats
     sig = hashlib.sha1(t.encode()).hexdigest()
     if sig == last_sig(level, focus, grade, auth):
         base = re.sub(r"\?.*$", "", t).rstrip(".!…")
-        alt_q = "What tells you that choice fits here?"
+        alt_q = _pick(REFLECTIVE_QS, 'reflect-'+focus)
         t = f"{base}. {alt_q}?"
     remember_sig(level, focus, grade, auth, t)
     return t.strip()
@@ -369,7 +339,7 @@ def home():
   #panel{position:sticky;bottom:0;background:var(--bg);padding:12px 0;border-top:1px solid var(--line)}
   #unlock{display:flex;gap:8px}
   input,button,select{font:inherit}
-  #password, textarea, select{padding:12px;border-radius:12px;border:1px solid var(--line);background:#fff;color:{--text}}
+  #password, textarea, select{padding:12px;border-radius:12px;border:1px solid var(--line);background:#fff;color:#0f172a}
   button{padding:12px 16px;border-radius:12px;border:1px solid var(--line);background:#111827;color:#fff;cursor:pointer;min-width:84px}
   button:disabled{opacity:.6;cursor:not-allowed}
   #composer{display:none;gap:10px;align-items:flex-end;flex-wrap:wrap}
@@ -461,7 +431,7 @@ function addBubble(who, text){
 function looksLikeProblem(text){
   const hasNums = /\\d/.test(text||'');
   const longish = (text||'').length >= 16;
-  const mathy = /(total|difference|sum|product|quotient|fraction|percent|area|perimeter|slope|graph|points|solve|x|y|how many|fewer|more|less)/i.test(text||'');
+  const mathy = /(total|difference|sum|product|quotient|fraction|percent|area|perimeter|slope|graph|points|solve|x|y|how many|fewer|more|less|groups|each|rate|per)/i.test(text||'');
   return (hasNums && longish) || mathy;
 }
 
@@ -626,7 +596,7 @@ def chat():
         elif lv == "master":
             style_line = "Master: minimal; ask one question only."
 
-        # Detect if the user just proposed a single numeric value (e.g., "8")
+        # Did user just propose a single value? (e.g., "8")
         user_answer_like = bool(re.fullmatch(r"\s*-?\d+(?:\.\d+)?\s*", text))
 
         messages = [
