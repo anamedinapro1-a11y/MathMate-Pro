@@ -155,7 +155,7 @@ _ANSWER_PH = re.compile(r"\b(the answer is|therefore|thus|equals|so you get)\b",
 _TAG_OK    = "[[LIKELY_OK]]"
 _TAG_OFF   = "[[LIKELY_OFF]]"
 
-# ---- Apprentice Options Generator ----
+# ---- Options builder / operation detection ----
 def _needs_options(text: str) -> bool:
     return not re.search(r"(^|\n)\s*(A\)|B\)|C\)|•|-)\s+", text)
 
@@ -169,46 +169,43 @@ def _op_options_for_focus(focus: str, band: str) -> str:
         return "A) Multiply  B) Divide"
     return "A) Add  B) Subtract  C) Multiply  D) Divide"
 
-# ---- Operation phrasing guard: ALWAYS make ops a question with options ----
 _OP_WORDS = re.compile(r"\b(add|plus|sum|subtract|minus|difference|take\s*away|fewer|less|more than|multiply|times|product|divide|divided\s+by|over|quotient|rate|per|each|share)\b", re.I)
 
-def _operation_question_for_focus(focus: str) -> str:
+def _operation_question_for_focus(focus: str, band: str) -> str:
     f = (focus or "").lower()
     if any(w in f for w in ["fewer", "less", "difference", "compare", "take away", "left", "remain", "more than"]):
         return "Do we add or subtract?"
     if any(w in f for w in ["per", "each", "rate", "share", "split", "quotient", "over"]):
         return "Should we multiply or divide?"
     if any(w in f for w in ["groups of", "times", "same size groups", "area", "rectangle"]):
-        return "Is this best seen as multiplying or adding repeatedly?"
-    return "Which operation fits here?"
+        return "Is this multiplying or adding repeatedly?"
+    return "Which operation fits best?"
 
 def _force_operation_choice(text: str, focus: str, level: str, band: str) -> str:
     """
-    If the message talks about operations (or synonyms) but ends with a vague question like
-    'what would you try next?', replace the final question with a clear operation-choice question
-    and append operation options.
+    If the message mentions operations/synonyms, ensure we end with a clean
+    operation-choice question + options (no vague 'what would you try next?').
     """
     t = (text or "").strip()
     contains_ops = bool(_OP_WORDS.search(t))
     if not contains_ops:
         return t
 
-    # Replace any 'take away X from Y' narration with a neutral line
-    t = re.sub(r"\btake\s+away\s+[^\.!?]+?\s+from\s+[^\.!?]+", "think about how to compare the two amounts", t, flags=re.I)
+    # Remove narrations like "take away 5 from 12"
+    t = re.sub(r"\btake\s+away\s+[^\.!?]+?\s+from\s+[^\.!?]+", "compare the two amounts", t, flags=re.I)
 
-    # Replace trailing generic question with an operation-choice question
-    q_idx = t.rfind("?")
-    op_q = _operation_question_for_focus(focus)
-    if q_idx != -1:
-        # cut to last sentence end and replace with op question
-        start = t.rfind(".", 0, q_idx)
-        if start == -1: start = 0
-        t = (t[:start].rstrip(".!… ") + ". " + op_q).strip()
+    # Replace any trailing question with an operation-choice question
+    op_q = _operation_question_for_focus(focus, band)
+    if "?" in t:
+        # keep everything before last sentence, replace last with op_q
+        last_q = t.rfind("?")
+        start = t.rfind(".", 0, last_q)
+        start = 0 if start == -1 else start + 1
+        prefix = t[:start].rstrip(".!… ")
+        t = (prefix + (". " if prefix else "") + op_q).strip()
     else:
-        # if no question, add one
         t = (t.rstrip(".!…") + ". " + op_q).strip()
 
-    # Add options if not present
     if _needs_options(t):
         t += "\n" + _op_options_for_focus(focus, band)
     return t
@@ -223,21 +220,31 @@ def _split_micro_and_question(text: str):
     question = text[start:q_idx+1].strip()
     return micro, question
 
-def _limit_form(text: str, band: str) -> str:
+def _limit_form(text: str, band: str, level: str, focus: str) -> str:
+    """
+    Trim sentences and, if we somehow still don't end with a specific question,
+    convert to a clear choice question (never 'what would you try next?').
+    """
     max_sent = 3 if band == "K-2" else 4
     parts = re.split(r"(?<=[\.\?\!])\s+", text.strip())
     parts = [p.strip() for p in parts if p.strip()][:max_sent]
-    text = " ".join(parts) if parts else ""
-    qs = [m.start() for m in re.finditer(r"\?", text)]
+    t = " ".join(parts) if parts else ""
+    # Ensure exactly one '?'
+    qs = [m.start() for m in re.finditer(r"\?", t)]
     if len(qs) == 0:
-        text = (text.rstrip(".!…") + " — what would you try next?").strip() if text else "What would you try first?"
+        # No question → make an operation-choice or generic choice question with options
+        op_q = _operation_question_for_focus(focus, band)
+        t = (t.rstrip(".!…") + (". " if t else "") + op_q).strip()
     elif len(qs) > 1:
         last = qs[-1]
         buff = []
-        for i, ch in enumerate(text):
+        for i, ch in enumerate(t):
             buff.append("." if ch == "?" and i != last else ch)
-        text = "".join(buff)
-    return text
+        t = "".join(buff)
+    # Apprentice always sees choices
+    if (level or "").lower() == "apprentice" and _needs_options(t):
+        t += "\n" + _op_options_for_focus(focus, band)
+    return t
 
 def _simplify_for_k2(text: str) -> str:
     swaps = {
@@ -253,8 +260,9 @@ def _simplify_for_k2(text: str) -> str:
     text = re.sub(r",\s+and", " and", text)
     return text
 
-def _pick_scaffold(level: str, band: str, seed: str) -> str:
-    if (level or "").lower() != "apprentice":
+def _pick_scaffold(level: str, band: str, seed: str, user_answer_like: bool) -> str:
+    # Do NOT scaffold right after a numeric answer; it feels off-topic.
+    if (level or "").lower() != "apprentice" or user_answer_like:
         return ""
     if band == "K-2":
         first = _pick(SCAFFOLD_K2_FIRST, seed)
@@ -285,24 +293,24 @@ def enforce_mathmate_style(text: str, level: str, focus: str, grade: str, auth: 
     micro, question = _split_micro_and_question(t)
     prev_micro = last_micro(level, focus, grade, auth)
     if micro and prev_micro and micro.strip().lower() == prev_micro.strip().lower():
-        t = question or "What would you try next?"
+        t = question or ""
     else:
         if micro: remember_micro(level, focus, grade, auth, micro)
 
-    # Apprentice scaffolding (grade-aware)
-    if (level or "").lower() == "apprentice":
-        if not re.search(r"\bfirst\b|\bthen\b|\bstart\b|\bbegin\b|\bstep\b", t, re.I):
-            t = (_pick_scaffold(level, band, focus) + " " + t).strip()
+    # Apprentice scaffolding (grade-aware; skip if user just gave a number)
+    scaff = _pick_scaffold(level, band, focus, user_answer_like)
+    if scaff and scaff not in t:
+        t = (scaff + " " + t).strip()
 
     # Grade simplifier
     if band == "K-2":
         t = _simplify_for_k2(t)
 
-    # ALWAYS convert any operation-y phrasing into a clean question + options
+    # ALWAYS convert operation-y phrasing into a clean question + options
     t = _force_operation_choice(t, focus, level, band)
 
-    # shape & one-question rule
-    t = _limit_form(t, band)
+    # shape & single question; never “what would you try next?”
+    t = _limit_form(t, band, level, focus)
 
     # Answer encouragement policy (ONLY if learner proposed a lone value)
     if user_answer_like:
@@ -312,10 +320,6 @@ def enforce_mathmate_style(text: str, level: str, focus: str, grade: str, auth: 
         else:
             if not (t.lstrip().startswith("Mmm, let’s review the steps.") or t.lstrip().startswith("Let's check again—") or t.lstrip().startswith("Let’s step back for a sec.") ):
                 t = _pick(REVIEW_PROMPTS, focus) + " " + t
-
-    # Ensure we end with a question or options visible
-    if "?" not in t and not re.search(r"(^|\n)\s*(A\)|B\)|C\)|•|-)\s+", t):
-        t = t.rstrip(".!…") + " — what would you try next?"
 
     # reduce exact repeats
     sig = hashlib.sha1(t.encode()).hexdigest()
