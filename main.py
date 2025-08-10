@@ -86,8 +86,8 @@ LEVELS
 • Master — minimal; ask ONE question only.
 
 OPERATIONS POLICY
-• You MAY use operation names (add, subtract, multiply, divide), but ONLY inside a QUESTION or as OPTIONS; do not issue commands or compute.
-• Avoid writing equations; focus on reasoning and format choices.
+• You MAY name operations (add, subtract, multiply, divide), but ONLY inside a QUESTION or as OPTIONS; never as a directive or final answer.
+• Avoid writing equations; focus on reasoning, format, and checking with graphs/tables when relevant.
 """
 
 GUIDE_RULES = """
@@ -157,41 +157,59 @@ _TAG_OFF   = "[[LIKELY_OFF]]"
 
 # ---- Apprentice Options Generator ----
 def _needs_options(text: str) -> bool:
-    return not re.search(r"(^|\n)\s*(A\)|B\)|•|-)\s+", text)
+    return not re.search(r"(^|\n)\s*(A\)|B\)|C\)|•|-)\s+", text)
 
 def _op_options_for_focus(focus: str, band: str) -> str:
     f = (focus or "").lower()
-    if any(w in f for w in ["fewer", "more", "less", "difference", "compare", "how many left"]):
-        return "A) Add  B) Subtract"
+    if any(w in f for w in ["fewer", "more", "less", "difference", "compare", "how many left", "take away", "left", "remain"]):
+        return "A) Add (put together)  B) Subtract (take away)"
     if any(w in f for w in ["groups of", "each has", "same size groups", "area", "rectangle", "times"]):
         return "A) Add repeatedly  B) Multiply"
     if any(w in f for w in ["per", "each", "rate", "split", "share", "equal groups", "average"]):
         return "A) Multiply  B) Divide"
-    # general default
     return "A) Add  B) Subtract  C) Multiply  D) Divide"
 
-# ---- Operation phrasing guard: allow ops only as questions/options ----
-_OP_WORDS = re.compile(r"\b(add|plus|sum|subtract|minus|difference|multiply|times|product|divide|divided\s+by|over|quotient)\b", re.I)
+# ---- Operation phrasing guard: ALWAYS make ops a question with options ----
+_OP_WORDS = re.compile(r"\b(add|plus|sum|subtract|minus|difference|take\s*away|fewer|less|more than|multiply|times|product|divide|divided\s+by|over|quotient|rate|per|each|share)\b", re.I)
 
-def _ops_must_be_questions_or_options(text: str, focus: str, level: str, band: str) -> str:
+def _operation_question_for_focus(focus: str) -> str:
+    f = (focus or "").lower()
+    if any(w in f for w in ["fewer", "less", "difference", "compare", "take away", "left", "remain", "more than"]):
+        return "Do we add or subtract?"
+    if any(w in f for w in ["per", "each", "rate", "share", "split", "quotient", "over"]):
+        return "Should we multiply or divide?"
+    if any(w in f for w in ["groups of", "times", "same size groups", "area", "rectangle"]):
+        return "Is this best seen as multiplying or adding repeatedly?"
+    return "Which operation fits here?"
+
+def _force_operation_choice(text: str, focus: str, level: str, band: str) -> str:
     """
-    If operation words appear but there's no options and the sentence isn't a question yet,
-    convert the tail into a single question and append options.
+    If the message talks about operations (or synonyms) but ends with a vague question like
+    'what would you try next?', replace the final question with a clear operation-choice question
+    and append operation options.
     """
-    t = text.strip()
+    t = (text or "").strip()
     contains_ops = bool(_OP_WORDS.search(t))
-    has_q = "?" in t
-    if contains_ops and not has_q:
-        # make a gentle single question
-        if any(w in (focus or "").lower() for w in ["fewer", "less", "difference", "compare", "left"]):
-            q = "Would subtract or add fit best here?"
-        elif any(w in (focus or "").lower() for w in ["per", "each", "rate", "share", "split"]):
-            q = "Would multiply or divide make more sense?"
-        else:
-            q = "Which operation do you think fits here?"
-        t = (t.rstrip(".!…") + " " + q).strip()
-    # add options if needed (esp. Apprentice)
-    if (level or "").lower() == "apprentice" and _needs_options(t):
+    if not contains_ops:
+        return t
+
+    # Replace any 'take away X from Y' narration with a neutral line
+    t = re.sub(r"\btake\s+away\s+[^\.!?]+?\s+from\s+[^\.!?]+", "think about how to compare the two amounts", t, flags=re.I)
+
+    # Replace trailing generic question with an operation-choice question
+    q_idx = t.rfind("?")
+    op_q = _operation_question_for_focus(focus)
+    if q_idx != -1:
+        # cut to last sentence end and replace with op question
+        start = t.rfind(".", 0, q_idx)
+        if start == -1: start = 0
+        t = (t[:start].rstrip(".!… ") + ". " + op_q).strip()
+    else:
+        # if no question, add one
+        t = (t.rstrip(".!…") + ". " + op_q).strip()
+
+    # Add options if not present
+    if _needs_options(t):
         t += "\n" + _op_options_for_focus(focus, band)
     return t
 
@@ -280,8 +298,8 @@ def enforce_mathmate_style(text: str, level: str, focus: str, grade: str, auth: 
     if band == "K-2":
         t = _simplify_for_k2(t)
 
-    # Ensure ops only as questions/options (and add options when needed)
-    t = _ops_must_be_questions_or_options(t, focus, level, band)
+    # ALWAYS convert any operation-y phrasing into a clean question + options
+    t = _force_operation_choice(t, focus, level, band)
 
     # shape & one-question rule
     t = _limit_form(t, band)
@@ -296,7 +314,7 @@ def enforce_mathmate_style(text: str, level: str, focus: str, grade: str, auth: 
                 t = _pick(REVIEW_PROMPTS, focus) + " " + t
 
     # Ensure we end with a question or options visible
-    if "?" not in t and not re.search(r"(^|\n)\s*(A\)|B\)|•|-)\s+", t):
+    if "?" not in t and not re.search(r"(^|\n)\s*(A\)|B\)|C\)|•|-)\s+", t):
         t = t.rstrip(".!…") + " — what would you try next?"
 
     # reduce exact repeats
@@ -431,7 +449,7 @@ function addBubble(who, text){
 function looksLikeProblem(text){
   const hasNums = /\\d/.test(text||'');
   const longish = (text||'').length >= 16;
-  const mathy = /(total|difference|sum|product|quotient|fraction|percent|area|perimeter|slope|graph|points|solve|x|y|how many|fewer|more|less|groups|each|rate|per)/i.test(text||'');
+  const mathy = /(total|difference|sum|product|quotient|fraction|percent|area|perimeter|slope|graph|points|solve|x|y|how many|fewer|more|less|groups|each|rate|per|left|remain)/i.test(text||'');
   return (hasNums && longish) || mathy;
 }
 
