@@ -80,8 +80,12 @@ HARD_CONSTRAINT = (
 
 # ---------- OUTPUT GUARDRAILS ----------
 _CONFIRM_WORDS = re.compile(r"\b(correct|right|exactly|nailed\s*it|that\s*works|you'?re\s*right|spot\s*on)\b", re.I)
-_OP_NAMES = re.compile(r"\b(add|subtract|multiply|divide|plug|replace|simplify|distribute|factor|solve|isolate|cross[-\s]?multiply)\b", re.I)
-_EQN_BITS = re.compile(r"([=+\-*/^]|(?<!\w)%|\b\d+\s*/\s*\d+\b)")           # mask arithmetic/operators
+# include verb & keyword forms
+_OP_TOKENS = re.compile(
+    r"\b(add|plus|sum|subtract|minus|difference|multiply|times|product|divide|divided\s+by|over|quotient)\b",
+    re.I,
+)
+_EQN_BITS = re.compile(r"([=+\-*/^]|(?<!\w)%|\b\d+\s*/\s*\d+\b)")           # mask arithmetic/operators but not plain numerals
 _COORDS   = re.compile(r"\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)")   # mask (x, y)
 _ANSWER_PH = re.compile(r"\b(the answer is|therefore|thus|equals|so you get)\b", re.I)
 _TAG_OK    = "[[LIKELY_OK]]"
@@ -120,19 +124,68 @@ def _limit_form(text: str) -> str:
         text = "".join(buff)
     return text
 
+# --- Grammar-aware operation rewrites ---
+def _normalize_ops_phrasing(text: str) -> str:
+    """
+    Make phrasing natural when the model uses operation words.
+    Avoid robotic 'that step' and avoid explicit arithmetic prompts like '19 - 5'.
+    """
+
+    # Clause-level rewrites for common patterns
+    # 1) "subtract X from Y" -> "find the difference between Y and X"
+    text = re.sub(
+        r"\b(subtract)\s+([^\.?\n]+?)\s+(from)\s+([^\.?\n]+?)([\.\?!])",
+        lambda m: f"find the difference between {m.group(4)} and {m.group(2)}{m.group(5)}",
+        text,
+        flags=re.I,
+    )
+
+    # 2) generic verbs
+    replacements = {
+        r"\bsubtract\b": "find the difference between",
+        r"\bminus\b": "find the difference between",
+        r"\badd\b": "combine",
+        r"\bplus\b": "combine",
+        r"\bmultiply\b": "scale",
+        r"\btimes\b": "scale",
+        r"\bdivide\b": "compare as a rate",
+        r"\bdivided\s+by\b": "compare as a rate",
+        r"\bover\b": "compare as a rate",
+    }
+    for pat, repl in replacements.items():
+        text = re.sub(pat, repl, text, flags=re.I)
+
+    # If the **question** still contains an explicit operation with two numerals (e.g., "What is 19 minus 5?")
+    # rewrite the final question generically.
+    q_idx = text.rfind("?")
+    if q_idx != -1:
+        before = text[:q_idx]
+        question = text[q_idx-200 if q_idx-200>0 else 0:q_idx+1]
+        if re.search(r"\b(\d+)\s*(minus|plus|times|divided\s+by|over)\s*(\d+)\b", question, re.I):
+            question = "How many more is that?" if re.search(r"minus", question, re.I) else "What result do you get?"
+            text = before.strip() + (" " if before.strip() else "") + question
+        # also scrub leftover operator symbols in the question
+        question = re.sub(_EQN_BITS, "…", question)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    return text
+
 def enforce_mathmate_style(text: str, level: str, focus: str, auth: str, user_answer_like: bool) -> str:
     # 1) read + strip hidden tag
     tag, stripped = _extract_hidden_tag(text or "")
     t = stripped.strip()
 
-    # 2) remove confirmations, ops, equations, coords, answer-y phrases
+    # 2) remove confirmations & answer-y phrases first
     t = _CONFIRM_WORDS.sub(" ", t)
-    t = _OP_NAMES.sub("that step", t)
-    t = _EQN_BITS.sub("…", t)
-    t = _COORDS.sub("that point", t)
     t = _ANSWER_PH.sub("What makes you confident", t)
 
-    # 3) de-dupe micro-lesson within the same focus
+    # 3) grammar-aware op rewrites BEFORE masking symbols (to preserve context)
+    t = _normalize_ops_phrasing(t)
+
+    # 4) now mask explicit arithmetic symbols & coords
+    t = _EQN_BITS.sub("…", t)
+    t = _COORDS.sub("that point", t)
+
+    # 5) de-dupe micro-lesson within the same focus
     micro, question = _split_micro_and_question(t)
     prev = last_micro(level, focus, auth)
     if micro and prev and micro.strip().lower() == prev.strip().lower():
@@ -141,17 +194,14 @@ def enforce_mathmate_style(text: str, level: str, focus: str, auth: str, user_an
         if micro:
             remember_micro(level, focus, auth, micro)
 
-    # 4) Apprentice: if no “step” verbs present, add one tiny scaffold
+    # 6) Apprentice: if no “step” verbs present, add one tiny scaffold
     if (level or "").lower() == "apprentice" and "step" not in t.lower():
         t = "Identify what’s being asked and label x and y. " + t
 
-    # 5) shape: ≤4 sentences, exactly one '?'
+    # 7) shape: ≤4 sentences, exactly one '?'
     t = _limit_form(t)
 
-    # 6) Answer encouragement policy (ONLY if leaner proposed a lone value)
-    #    If user_answer_like is True:
-    #       - tag OK  => ensure prefix “✅ Try it.” (encouraging)
-    #       - tag OFF => ensure prefix “Mmm, let’s review the steps.” (no encouragement)
+    # 8) Answer encouragement policy (ONLY if learner proposed a lone value)
     if user_answer_like:
         if tag == "OK":
             if not t.lstrip().startswith("✅ Try it"):
@@ -159,11 +209,8 @@ def enforce_mathmate_style(text: str, level: str, focus: str, auth: str, user_an
         else:
             if not (t.lstrip().startswith("Mmm, let’s review the steps.") or t.lstrip().startswith("Let's check again—")):
                 t = "Mmm, let’s review the steps. " + t
-    else:
-        # no tag-driven encouragement when no explicit answer was proposed
-        pass
 
-    # 7) ensure it ends with a question or options
+    # 9) ensure final question or options
     if "?" not in t and not re.search(r"(^|\n)\s*([\-•]|A\)|1\))", t):
         t = t.rstrip(".!…") + " — what would you try next?"
 
@@ -174,7 +221,7 @@ def enforce_mathmate_style(text: str, level: str, focus: str, auth: str, user_an
 def health():
     return "ok", 200
 
-# ---------- UI (same as your version) ----------
+# ---------- UI (same as before) ----------
 @app.get("/")
 def home():
     return """
@@ -428,7 +475,7 @@ def chat():
             "If the learner says 'I don’t know', provide a tiny micro-lesson relevant to THIS focus and ask a smaller clarifying question."
         )
 
-        # Small Apprent/Rising/Master style nudge
+        # Style nudges
         style_line = ""
         lv = (level or "").lower()
         if lv == "apprentice":
