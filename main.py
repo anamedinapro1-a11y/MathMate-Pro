@@ -21,54 +21,78 @@ DEBUG    = os.getenv("DEBUG", "0") == "1"
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ---------- LIGHTWEIGHT SESSION MEMORY ----------
-# keyed by (level|focus|auth)
+# keyed by (level|focus|grade|auth)
 MEM = defaultdict(dict)  # {"last_micro": str, "last_sig": str, "ts": float}
 
-def _session_key(level: str, focus: str, auth: str) -> str:
-    raw = f"{(level or '').lower()}|{(focus or '').strip()}|{auth or ''}"
+def _session_key(level: str, focus: str, grade: str, auth: str) -> str:
+    raw = f"{(level or '').lower()}|{(focus or '').strip()}|{(grade or '').lower()}|{auth or ''}"
     return hashlib.sha1(raw.encode()).hexdigest()
 
-def remember_micro(level: str, focus: str, auth: str, micro: str):
-    key = _session_key(level, focus, auth)
+def remember_micro(level: str, focus: str, grade: str, auth: str, micro: str):
+    key = _session_key(level, focus, grade, auth)
     d = MEM.get(key, {})
     d["last_micro"] = (micro or "").strip()
     d["ts"] = time.time()
     MEM[key] = d
 
-def last_micro(level: str, focus: str, auth: str) -> str:
-    return (MEM.get(_session_key(level, focus, auth)) or {}).get("last_micro", "")
+def last_micro(level: str, focus: str, grade: str, auth: str) -> str:
+    return (MEM.get(_session_key(level, focus, grade, auth)) or {}).get("last_micro", "")
 
-def remember_sig(level: str, focus: str, auth: str, text: str):
-    key = _session_key(level, focus, auth)
+def remember_sig(level: str, focus: str, grade: str, auth: str, text: str):
+    key = _session_key(level, focus, grade, auth)
     d = MEM.get(key, {})
     d["last_sig"] = hashlib.sha1((text or "").encode()).hexdigest()
     d["ts"] = time.time()
     MEM[key] = d
 
-def last_sig(level: str, focus: str, auth: str) -> str:
-    return (MEM.get(_session_key(level, focus, auth)) or {}).get("last_sig", "")
+def last_sig(level: str, focus: str, grade: str, auth: str) -> str:
+    return (MEM.get(_session_key(level, focus, grade, auth)) or {}).get("last_sig", "")
+
+# ---------- GRADE BANDS ----------
+def grade_band(grade: str) -> str:
+    """
+    Returns one of: K-2, 3-5, 6-8, 9-12
+    Accepts strings like 'K', '1', '2nd', 'grade 7', '11', etc.
+    """
+    g = (grade or "").strip().lower()
+    # direct
+    if g in {"k", "kindergarten", "kg"}: n = 0
+    else:
+        m = re.search(r"\d+", g)
+        n = int(m.group()) if m else 8  # default 8th if unspecified
+        if n < 0: n = 0
+        if n > 12: n = 12
+    if 0 <= n <= 2:  return "K-2"
+    if 3 <= n <= 5:  return "3-5"
+    if 6 <= n <= 8:  return "6-8"
+    return "9-12"
 
 # ---------- SYSTEM PROMPTS ----------
 MATHMATE_PROMPT = """
-MATHMATE — SOCRATIC GUIDE (Acton + Khan). You guide ages 13+. You never give final answers.
+MATHMATE — SOCRATIC GUIDE (Acton + Khan). You guide ages 13+ normally, but ADAPT to the student's grade band.
+You never give final answers.
 
 ANCHORING
 • You receive a Focus Anchor for the current problem. Stay on it unless the learner clearly starts a new one (“new problem”).
 • If the learner says “I don’t know,” give a tiny micro-lesson for THIS focus, then a smaller question.
 
-STYLE
-• Natural, warm, and clear. Question-led. Respectful and curious — never condescending.
-• Do not say “correct/incorrect” or otherwise confirm correctness.
-• Screenshots: briefly check format (fraction vs decimal, x vs y), note any graph and a clean point.
+STYLE (ADAPT BY GRADE)
+• K-2: short, friendly, concrete words; 1–2 tiny steps; kid tone; no jargon.
+• 3-5: clear and simple; gentle vocabulary; concrete examples; avoid heavy terms.
+• 6-8: normal middle-school tone; use everyday math words.
+• 9-12: concise, respectful, precise; still Socratic.
+• Always question-led. Respectful and curious — never condescending.
+• Do not say “correct/incorrect” or confirm correctness.
+• Screenshots: briefly check format (fraction vs decimal, x vs y), note any graph and a clear point.
 
 LEVELS
-• Apprentice — give 1–2 short scaffolding lines using natural verbs (no arithmetic), define the first math term briefly, then ask ONE question.
+• Apprentice — give 1–2 short scaffolding lines using natural verbs (no arithmetic), define the first math word briefly (except K-2), then ask ONE question.
 • Rising Hero — one short nudge if needed, then ONE question.
 • Master — minimal; ask ONE question only.
 
 OUTPUT SHAPE
-• Micro-lesson (0–2 brief statements) and/or scaffolding (≤2 lines) → EXACTLY ONE question (one “?” total), ≤4 sentences overall.
-• Avoid explicit operation names like add/subtract/multiply/divide and avoid equations or operator symbols in your wording.
+• Micro-lesson (0–2 brief statements) and/or scaffolding (≤2 lines) → EXACTLY ONE question (one “?” total).
+• Avoid explicit operation names like add/subtract/multiply/divide and avoid equations or operator symbols.
 """
 
 GUIDE_RULES = """
@@ -85,22 +109,32 @@ FORMAT/SCREENSHOTS
 • Ask early: “fraction or decimal?”, “which is x and which is y?”, “is there a graph — can you find a clear point?”, “what happens when you divide y by x?”
 
 HIDDEN TAG (required)
-• Append exactly [[LIKELY_OK]] or [[LIKELY_OFF]] at the very end of EVERY reply, based on your private judgment about any just-proposed value; if no value was proposed, use [[LIKELY_OFF]]. Do not explain this tag.
+• Append exactly [[LIKELY_OK]] or [[LIKELY_OFF]] at the end of EVERY reply, based on your private judgment about any just-proposed value; if no value was proposed, use [[LIKELY_OFF]]. Do not explain this tag.
 """
 
 HARD_CONSTRAINT = (
     "Hard constraint: micro-lesson first (0–2 short statements), optionally 1–2 scaffold lines (natural verbs only), "
-    "then EXACTLY ONE question (one '?'). ≤4 sentences total. "
+    "then EXACTLY ONE question (one '?'). ≤4 sentences total (≤3 for K-2). "
     "Avoid operation names and equations. Stay anchored to the provided focus."
 )
 
 # ---------- HUMAN-LIKE PHRASE BANKS ----------
-SCAFFOLD_STARTS = [
+SCAFFOLD_K2_FIRST = [
+    "First, say what you’re trying to find. 😊",
+    "First, point to what the problem is asking.",
+    "First, tell me the goal in your own words.",
+]
+SCAFFOLD_K2_NEXT = [
+    "Then, match each number to a person or thing.",
+    "Then, line up the two amounts you’re comparing.",
+    "Then, think: who has more and who has less?",
+]
+SCAFFOLD_UP_FIRST = [
     "First, name what’s being asked.",
-    "Start by naming the goal.",
+    "Start by stating the goal.",
     "Begin by saying what you’re trying to find.",
 ]
-SCAFFOLD_NEXT = [
+SCAFFOLD_UP_NEXT = [
     "Then, match each number to a role (x vs y or who/what).",
     "Then, line up the two amounts you’re comparing.",
     "Then, decide how the two quantities relate.",
@@ -111,46 +145,67 @@ REVIEW_PROMPTS = [
     "Let’s step back for a sec.",
 ]
 REFLECTIVE_QS = [
-    "What makes you confident that approach fits here?",
+    "What makes you confident that fits here?",
     "What tells you that matches the question?",
     "How does that connect to what’s being asked?",
 ]
 GUIDING_QS = [
-    "When you compare them, what are you finding: how many more, or how many fewer?",
-    "Which quantity should you start from to match the wording?",
+    "When you compare them, are you finding how many more, or how many fewer?",
+    "Which number should you start from to match the wording?",
     "What labels would you put on each number to make the comparison clear?",
 ]
 
 def _pick(seq, seed: str) -> str:
-    # deterministic variety based on the focus/session
-    if not seq:
-        return ""
+    if not seq: return ""
     h = int(hashlib.sha1((seed or '').encode()).hexdigest(), 16)
     return seq[h % len(seq)]
 
 # ---------- OUTPUT GUARDRAILS ----------
 _CONFIRM_WORDS = re.compile(r"\b(correct|right|exactly|nailed\s*it|that\s*works|you'?re\s*right|spot\s*on)\b", re.I)
-
-# operation tokens (verbs & keywords); we won't blindly replace; we rewrite clauses gracefully
-_OP_TOKENS = re.compile(
-    r"\b(add|plus|sum|subtract|minus|difference|multiply|times|product|divide|divided\s+by|over|quotient)\b",
-    re.I,
-)
-
-# mask explicit arithmetic/operators and coordinate pairs (we’ll rewrite wording first)
 _EQN_BITS = re.compile(r"([=+\-*/^]|(?<!\w)%|\b\d+\s*/\s*\d+\b)")
 _COORDS   = re.compile(r"\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)")
 _ANSWER_PH = re.compile(r"\b(the answer is|therefore|thus|equals|so you get)\b", re.I)
-
 _TAG_OK    = "[[LIKELY_OK]]"
 _TAG_OFF   = "[[LIKELY_OFF]]"
 
-def _extract_hidden_tag(text: str):
-    if _TAG_OK in text:
-        return "OK", text.replace(_TAG_OK, "")
-    if _TAG_OFF in text:
-        return "OFF", text.replace(_TAG_OFF, "")
-    return "OFF", text  # default safe
+# --- Grammar-aware operation rewrites (natural English) ---
+def _normalize_ops_phrasing(text: str) -> str:
+    # subtract X from Y → difference between Y and X
+    text = re.sub(
+        r"\b(subtract)\s+([^\.?\n]+?)\s+(from)\s+([^\.?\n]+?)([\.\?!])",
+        lambda m: f"find the difference between {m.group(4)} and {m.group(2)}{m.group(5)}",
+        text,
+        flags=re.I,
+    )
+    # “Y minus X” → “the difference between Y and X”
+    text = re.sub(
+        r"\b([A-Za-z0-9 _]+?)\s+minus\s+([A-Za-z0-9 _]+?)\b",
+        r"the difference between \1 and \2",
+        text,
+        flags=re.I,
+    )
+    # Others to softer verbs
+    repl = {
+        r"\badd\b": "combine",
+        r"\bplus\b": "combine",
+        r"\bmultiply\b": "scale",
+        r"\btimes\b": "scale",
+        r"\bdivide\b": "compare as a rate",
+        r"\bdivided\s+by\b": "compare as a rate",
+        r"\bover\b": "compare as a rate",
+    }
+    for pat, rpl in repl.items():
+        text = re.sub(pat, rpl, text, flags=re.I)
+
+    # If final question still has explicit op with two numerals → generic
+    q_idx = text.rfind("?")
+    if q_idx != -1:
+        before = text[:q_idx]
+        question = text[q_idx-220 if q_idx-220>0 else 0:q_idx+1]
+        if re.search(r"\b(\d+)\s*(minus|plus|times|divided\s+by|over)\s*(\d+)\b", question, re.I):
+            question = "How many more (or fewer) is that?"
+            text = (before.strip() + " " + question).strip()
+    return re.sub(r"\s{2,}", " ", text).strip()
 
 def _split_micro_and_question(text: str):
     q_idx = text.rfind("?")
@@ -162,10 +217,11 @@ def _split_micro_and_question(text: str):
     question = text[start:q_idx+1].strip()
     return micro, question
 
-def _limit_form(text: str) -> str:
-    # ≤4 sentences; exactly one '?'
+def _limit_form(text: str, band: str) -> str:
+    # K-2 shorter
+    max_sent = 3 if band == "K-2" else 4
     parts = re.split(r"(?<=[\.\?\!])\s+", text.strip())
-    parts = [p.strip() for p in parts if p.strip()][:4]
+    parts = [p.strip() for p in parts if p.strip()][:max_sent]
     text = " ".join(parts) if parts else ""
     qs = [m.start() for m in re.finditer(r"\?", text)]
     if len(qs) == 0:
@@ -178,56 +234,43 @@ def _limit_form(text: str) -> str:
         text = "".join(buff)
     return text
 
-# --- Grammar-aware operation rewrites (natural English) ---
-def _normalize_ops_phrasing(text: str) -> str:
-    # 1) “subtract X from Y” → “find the difference between Y and X”
-    text = re.sub(
-        r"\b(subtract)\s+([^\.?\n]+?)\s+(from)\s+([^\.?\n]+?)([\.\?!])",
-        lambda m: f"find the difference between {m.group(4)} and {m.group(2)}{m.group(5)}",
-        text,
-        flags=re.I,
-    )
-    # 2) “Y minus X” in a clause (not necessarily the question)
-    text = re.sub(
-        r"\b([A-Za-z0-9 _]+?)\s+minus\s+([A-Za-z0-9 _]+?)\b",
-        r"the difference between \1 and \2",
-        text,
-        flags=re.I,
-    )
-    # 3) Simplify other verbs into gentle, non-robotic phrases
-    replacements = {
-        r"\badd\b": "combine",
-        r"\bplus\b": "combine",
-        r"\bmultiply\b": "scale",
-        r"\btimes\b": "scale",
-        r"\bdivide\b": "compare as a rate",
-        r"\bdivided\s+by\b": "compare as a rate",
-        r"\bover\b": "compare as a rate",
+def _simplify_for_k2(text: str) -> str:
+    # friendlier words + tiny sentences; light emojis allowed
+    swaps = {
+        r"\bdetermine\b": "find",
+        r"\bidentify\b": "find",
+        r"\bcompare\b": "look at",
+        r"\bquantity\b": "amount",
+        r"\bconsider\b": "think about",
+        r"\bstatement\b": "sentence",
     }
-    for pat, repl in replacements.items():
-        text = re.sub(pat, repl, text, flags=re.I)
-
-    # 4) If the final question still mentions an explicit operation with two numerals, make it generic.
-    q_idx = text.rfind("?")
-    if q_idx != -1:
-        before = text[:q_idx]
-        question = text[q_idx-220 if q_idx-220>0 else 0:q_idx+1]
-        if re.search(r"\b(\d+)\s*(minus|plus|times|divided\s+by|over)\s*(\d+)\b", question, re.I):
-            # Use a human, non-leading question
-            question = "How many more (or fewer) is that?"
-            text = (before.strip() + " " + question).strip()
-    # Clean spacing
-    text = re.sub(r"\s{2,}", " ", text).strip()
+    for pat, rpl in swaps.items():
+        text = re.sub(pat, rpl, text, flags=re.I)
+    # trim long clauses before comma
+    text = re.sub(r",\s+and", " and", text)
     return text
 
-def _vary_scaffold(level: str, seed: str) -> str:
+def _pick_scaffold(level: str, band: str, seed: str) -> str:
     if (level or "").lower() != "apprentice":
         return ""
-    first = _pick(SCAFFOLD_STARTS, seed)
-    second = _pick(SCAFFOLD_NEXT, "next-"+seed)
+    if band == "K-2":
+        first = _pick(SCAFFOLD_K2_FIRST, seed)
+        second = _pick(SCAFFOLD_K2_NEXT, "next-"+seed)
+    else:
+        first = _pick(SCAFFOLD_UP_FIRST, seed)
+        second = _pick(SCAFFOLD_UP_NEXT, "next-"+seed)
     return f"{first} {second}"
 
-def enforce_mathmate_style(text: str, level: str, focus: str, auth: str, user_answer_like: bool) -> str:
+def _extract_hidden_tag(text: str):
+    if _TAG_OK in text:
+        return "OK", text.replace(_TAG_OK, "")
+    if _TAG_OFF in text:
+        return "OFF", text.replace(_TAG_OFF, "")
+    return "OFF", text
+
+def enforce_mathmate_style(text: str, level: str, focus: str, grade: str, auth: str, user_answer_like: bool) -> str:
+    band = grade_band(grade)
+
     # 1) read + strip hidden tag
     tag, stripped = _extract_hidden_tag(text or "")
     t = stripped.strip()
@@ -245,22 +288,26 @@ def enforce_mathmate_style(text: str, level: str, focus: str, auth: str, user_an
 
     # 5) de-dupe micro-lesson within focus
     micro, question = _split_micro_and_question(t)
-    prev_micro = last_micro(level, focus, auth)
+    prev_micro = last_micro(level, focus, grade, auth)
     if micro and prev_micro and micro.strip().lower() == prev_micro.strip().lower():
         t = question or "What would you try next?"
     else:
         if micro:
-            remember_micro(level, focus, auth, micro)
+            remember_micro(level, focus, grade, auth, micro)
 
-    # 6) Apprentice scaffolding (friendly, non-robotic)
+    # 6) Apprentice scaffolding (grade-aware)
     if (level or "").lower() == "apprentice":
         if not re.search(r"\bfirst\b|\bthen\b|\bstart\b|\bbegin\b|\bstep\b", t, re.I):
-            t = (_vary_scaffold(level, focus) + " " + t).strip()
+            t = (_pick_scaffold(level, band, focus) + " " + t).strip()
 
-    # 7) shape & one-question rule
-    t = _limit_form(t)
+    # 7) K-2 simplifier
+    if band == "K-2":
+        t = _simplify_for_k2(t)
 
-    # 8) Answer encouragement policy (ONLY if learner proposed a lone value)
+    # 8) shape & one-question rule (grade-aware sentence cap)
+    t = _limit_form(t, band)
+
+    # 9) Answer encouragement policy (ONLY if learner proposed a lone value)
     if user_answer_like:
         if tag == "OK":
             if not t.lstrip().startswith("✅ Try it"):
@@ -268,17 +315,17 @@ def enforce_mathmate_style(text: str, level: str, focus: str, auth: str, user_an
         else:
             if not (t.lstrip().startswith("Mmm, let’s review the steps.") or t.lstrip().startswith("Let's check again—") or t.lstrip().startswith("Let’s step back for a sec.") ):
                 t = _pick(REVIEW_PROMPTS, focus) + " " + t
-    # 9) ensure one question or options
+
+    # 10) ensure one question or options
     if "?" not in t and not re.search(r"(^|\n)\s*([\-•]|A\)|1\))", t):
         t = t.rstrip(".!…") + " — what would you try next?"
 
-    # 10) avoid identical back-to-back bot outputs
+    # 11) avoid identical back-to-back bot outputs
     sig = hashlib.sha1(t.encode()).hexdigest()
-    if sig == last_sig(level, focus, auth):
-        # lightly vary with a different reflective question (still one '?')
+    if sig == last_sig(level, focus, grade, auth):
         base = re.sub(r"\?.*$", "", t).rstrip(".!…")
         t = f"{base}. {_pick(REFLECTIVE_QS, 'reflect-'+focus)}?"
-    remember_sig(level, focus, auth, t)
+    remember_sig(level, focus, grade, auth, t)
     return t.strip()
 
 # ---------- HEALTH ----------
@@ -300,7 +347,7 @@ def home():
   header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);padding:18px 16px;text-align:center}
   header h1{margin:0;font-size:22px;letter-spacing:.2px}
   main{display:flex;justify-content:center}
-  .wrap{width:100%;max-width:900px;padding:16px}
+  .wrap{width:100%;max-width:980px;padding:16px}
   #chat{min-height:58vh;max-height:72vh;overflow:auto;padding:12px 4px}
   .row{display:flex;margin:10px 0}
   .bubble{max-width:72%;padding:12px 14px;border:1px solid var(--line);border-radius:16px;line-height:1.5;white-space:pre-wrap}
@@ -311,18 +358,20 @@ def home():
   .sys{color:var(--muted);text-align:center;font-style:italic}
   #panel{position:sticky;bottom:0;background:var(--bg);padding:12px 0;border-top:1px solid var(--line)}
   #unlock{display:flex;gap:8px}
-  input,button{font:inherit}
-  #password, textarea{padding:12px;border-radius:12px;border:1px solid var(--line);background:#fff;color:var(--text)}
+  input,button,select{font:inherit}
+  #password, textarea, select{padding:12px;border-radius:12px;border:1px solid var(--line);background:#fff;color:var(--text)}
   button{padding:12px 16px;border-radius:12px;border:1px solid var(--line);background:#111827;color:#fff;cursor:pointer;min-width:84px}
   button:disabled{opacity:.6;cursor:not-allowed}
   #composer{display:none;gap:10px;align-items:flex-end;flex-wrap:wrap}
-  #left{flex:1;display:flex;flex-direction:column;gap:8px;min-width:300px}
+  #left{flex:1;display:flex;flex-direction:column;gap:8px;min-width:320px}
+  #topline{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   textarea{flex:1;resize:vertical;min-height:110px;max-height:300px}
   #drop{border:1px dashed var(--line);border-radius:12px;padding:10px;text-align:center;color:var(--muted)}
   #thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
   .thumb{width:80px;height:80px;border:1px solid var(--line);border-radius:8px;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden}
   .thumb img{max-width:100%;max-height:100%}
   small.hint{color:var(--muted)}
+  label{font-size:14px;color:#334155}
 </style>
 
 <header><h1>🔒 MathMate Pro</h1></header>
@@ -337,12 +386,30 @@ def home():
 
     <div id="composer">
       <div id="left">
-        <textarea id="msg" placeholder="Tell me your level (Apprentice / Rising Hero / Master), then send your problem or a photo. (Shift+Enter = newline)"></textarea>
+        <div id="topline">
+          <label>Grade:
+            <select id="grade">
+              <option value="">Select grade…</option>
+              <option value="K">K</option>
+              <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
+              <option>6</option><option>7</option><option>8</option><option>9</option><option>10</option><option>11</option><option>12</option>
+            </select>
+          </label>
+          <label>Level:
+            <select id="levelSel">
+              <option value="">Pick level…</option>
+              <option>Apprentice</option>
+              <option>Rising Hero</option>
+              <option>Master</option>
+            </select>
+          </label>
+        </div>
+        <textarea id="msg" placeholder="Send your problem or a photo. (Shift+Enter = newline)"></textarea>
         <div id="drop">
           <label for="fileBtn">➕ Add images (PNG/JPG) — drag & drop or click</label>
           <input id="fileBtn" type="file" accept="image/*" multiple />
           <div id="thumbs"></div>
-          <small class="hint">Images are analyzed with your prompt (vision). Say “new problem” to switch topics.</small>
+          <small class="hint">Tip: choose grade + level first. Say “new problem” to switch topics.</small>
         </div>
       </div>
       <button id="sendBtn">Send</button>
@@ -361,10 +428,13 @@ const sendBtn = document.getElementById('sendBtn');
 const fileBtn = document.getElementById('fileBtn');
 const drop = document.getElementById('drop');
 const thumbs = document.getElementById('thumbs');
+const gradeSel = document.getElementById('grade');
+const levelSel = document.getElementById('levelSel');
 
 let AUTH = '';
 let LEVEL = '';       // Apprentice | Rising Hero | Master
-let FOCUS = '';       // sticky anchor for the current problem
+let GRADE = '';       // K | 1..12
+let FOCUS = '';       // sticky anchor
 let queuedImages = [];
 
 function addBubble(who, text){
@@ -378,18 +448,10 @@ function addBubble(who, text){
   chat.scrollTop = chat.scrollHeight;
 }
 
-function pickLevelFrom(text){
-  const t = (text||'').toLowerCase();
-  if(t.includes('apprentice')) return 'Apprentice';
-  if(t.includes('rising hero')) return 'Rising Hero';
-  if(t.includes('master')) return 'Master';
-  return '';
-}
-
 function looksLikeProblem(text){
   const hasNums = /\\d/.test(text||'');
   const longish = (text||'').length >= 16;
-  const mathy = /(total|difference|sum|product|quotient|fraction|percent|area|perimeter|slope|graph|points|solve|x|y)/i.test(text||'');
+  const mathy = /(total|difference|sum|product|quotient|fraction|percent|area|perimeter|slope|graph|points|solve|x|y|how many)/i.test(text||'');
   return (hasNums && longish) || mathy;
 }
 
@@ -403,7 +465,7 @@ async function post(payload){
   const r = await fetch('/chat', {
     method:'POST',
     headers:{'Content-Type':'application/json','X-Auth':AUTH},
-    body: JSON.stringify({ ...payload, level: LEVEL, focus: FOCUS })
+    body: JSON.stringify({ ...payload, level: LEVEL, focus: FOCUS, grade: GRADE })
   });
   return r.json();
 }
@@ -455,25 +517,23 @@ unlockBtn.onclick = async ()=>{
     AUTH = pw;
     unlock.style.display='none';
     composer.style.display='flex';
-    addBubble('MathMate', "Which level should we use—🐣 Apprentice, 🦸 Rising Hero, or 🧠 Master?");
+    addBubble('MathMate', "Pick your grade and level, then send your problem or a photo. ✨");
     msgBox.focus();
   }
 };
 
+levelSel.onchange = ()=>{ LEVEL = levelSel.value; };
+gradeSel.onchange = ()=>{ GRADE = gradeSel.value; };
+
 sendBtn.onclick = async ()=>{
   let text = (msgBox.value||'').trim();
   if(!text && queuedImages.length===0) return;
+  if(!AUTH) return;
 
-  if(!LEVEL){
-    addBubble('You', text || '(image(s) only)');
-    const lv = pickLevelFrom(text);
-    if(lv){
-      LEVEL = lv;
-      addBubble('MathMate', `Great — we’ll use **${LEVEL}** mode. Send your problem or a photo. ✨`);
-    }else{
-      addBubble('MathMate', "Please choose: Apprentice, Rising Hero, or Master. 🙂");
-    }
-    msgBox.value = ''; return;
+  // capture grade/level once
+  if(!LEVEL || !GRADE){
+    addBubble('MathMate', "Choose a **grade** and a **level** first (top of the box), then send your problem. 🙂");
+    return;
   }
 
   resetFocusIfNewProblem(text, queuedImages.length);
@@ -501,7 +561,7 @@ pwdBox.addEventListener('keydown', (e)=>{
 </script>
 """
 
-# ---------- CHAT (vision + level + focus) ----------
+# ---------- CHAT (vision + level + focus + grade) ----------
 @app.post("/chat")
 def chat():
     try:
@@ -509,7 +569,8 @@ def chat():
         text   = (p.get("message") or "").strip()
         images = p.get("images") or []
         level  = (p.get("level") or "").strip()
-        focus  = (p.get("focus") or "").strip()  # sticky anchor
+        focus  = (p.get("focus") or "").strip()
+        grade  = (p.get("grade") or "").strip()
 
         if not text and not images:
             return jsonify(error="Missing 'message' or 'images'"), 400
@@ -529,9 +590,14 @@ def chat():
         if not user_content:
             user_content = [{"type": "text", "text": "Please analyze the attached image problem."}]
 
-        # Hints for model (session + focus)
+        # Hints
+        band = grade_band(grade)
+        grade_line = (
+            f"Grade band: {band}. Use language and sentence length that fit this band; "
+            "for K-2 keep sentences very short and concrete; use friendly tone and simple words."
+        )
         session_line = (
-            f"Session meta: level={level or 'unknown'}. "
+            f"Session meta: level={level or 'unknown'}, grade={grade or 'unknown'}. "
             "If level is present, do not ask for it again; start guiding immediately."
         )
         focus_line = (
@@ -540,23 +606,25 @@ def chat():
             "If the learner says 'I don’t know', provide a tiny micro-lesson relevant to THIS focus and ask a smaller clarifying question."
         )
 
-        # Style nudges
         style_line = ""
         lv = (level or "").lower()
         if lv == "apprentice":
             style_line = "Apprentice: include 1–2 scaffold lines (natural verbs; no arithmetic) before your single question."
+            if band == "K-2":
+                style_line += " Use kid-friendly words and keep sentences short."
         elif lv == "rising hero":
             style_line = "Rising Hero: one short nudge if needed, then your single question."
         elif lv == "master":
             style_line = "Master: minimal; ask one question only."
 
-        # Detect if the user just proposed a single numeric value (e.g., "8" or "3.5")
+        # Detect if the user just proposed a single numeric value (e.g., "8")
         user_answer_like = bool(re.fullmatch(r"\s*-?\d+(?:\.\d+)?\s*", text))
 
         messages = [
             {"role": "system", "content": MATHMATE_PROMPT},
             {"role": "system", "content": GUIDE_RULES},
             {"role": "system", "content": HARD_CONSTRAINT},
+            {"role": "system", "content": grade_line},
             {"role": "system", "content": focus_line},
             {"role": "system", "content": session_line},
             {"role": "system", "content": style_line},
@@ -570,7 +638,7 @@ def chat():
         )
         raw = completion.choices[0].message.content
         auth = request.headers.get("X-Auth","")
-        reply = enforce_mathmate_style(raw, level, focus, auth, user_answer_like)
+        reply = enforce_mathmate_style(raw, level, focus, grade, auth, user_answer_like)
         return jsonify(reply=reply)
 
     except Exception as e:
