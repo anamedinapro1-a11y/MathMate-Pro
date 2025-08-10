@@ -52,16 +52,15 @@ def last_sig(level: str, focus: str, grade: str, auth: str) -> str:
 def grade_band(grade: str) -> str:
     """
     Returns one of: K-2, 3-5, 6-8, 9-12
-    Accepts strings like 'K', '1', '2nd', 'grade 7', '11', etc.
+    Accepts strings like 'K', '2', '2nd', 'grade 7', '11', etc.
     """
     g = (grade or "").strip().lower()
-    # direct
-    if g in {"k", "kindergarten", "kg"}: n = 0
+    if g in {"k", "kindergarten", "kg"}:
+        n = 0
     else:
         m = re.search(r"\d+", g)
-        n = int(m.group()) if m else 8  # default 8th if unspecified
-        if n < 0: n = 0
-        if n > 12: n = 12
+        n = int(m.group()) if m else 8
+        n = min(max(n, 0), 12)
     if 0 <= n <= 2:  return "K-2"
     if 3 <= n <= 5:  return "3-5"
     if 6 <= n <= 8:  return "6-8"
@@ -69,8 +68,7 @@ def grade_band(grade: str) -> str:
 
 # ---------- SYSTEM PROMPTS ----------
 MATHMATE_PROMPT = """
-MATHMATE — SOCRATIC GUIDE (Acton + Khan). You guide ages 13+ normally, but ADAPT to the student's grade band.
-You never give final answers.
+MATHMATE — SOCRATIC GUIDE (Acton + Khan). You adapt to the student's grade and never give final answers.
 
 ANCHORING
 • You receive a Focus Anchor for the current problem. Stay on it unless the learner clearly starts a new one (“new problem”).
@@ -79,20 +77,20 @@ ANCHORING
 STYLE (ADAPT BY GRADE)
 • K-2: short, friendly, concrete words; 1–2 tiny steps; kid tone; no jargon.
 • 3-5: clear and simple; gentle vocabulary; concrete examples; avoid heavy terms.
-• 6-8: normal middle-school tone; use everyday math words.
+• 6-8: normal middle-school tone; everyday math words.
 • 9-12: concise, respectful, precise; still Socratic.
 • Always question-led. Respectful and curious — never condescending.
 • Do not say “correct/incorrect” or confirm correctness.
 • Screenshots: briefly check format (fraction vs decimal, x vs y), note any graph and a clear point.
 
 LEVELS
-• Apprentice — give 1–2 short scaffolding lines using natural verbs (no arithmetic), define the first math word briefly (except K-2), then ask ONE question.
+• Apprentice — give 1–2 short scaffolding lines (natural verbs; no arithmetic), define the first math word briefly (except K-2), then ask ONE question **and include options if helpful**.
 • Rising Hero — one short nudge if needed, then ONE question.
 • Master — minimal; ask ONE question only.
 
 OUTPUT SHAPE
 • Micro-lesson (0–2 brief statements) and/or scaffolding (≤2 lines) → EXACTLY ONE question (one “?” total).
-• Avoid explicit operation names like add/subtract/multiply/divide and avoid equations or operator symbols.
+• Avoid explicit operation names (add/subtract/multiply/divide) and avoid equations or operator symbols.
 """
 
 GUIDE_RULES = """
@@ -121,7 +119,7 @@ HARD_CONSTRAINT = (
 # ---------- HUMAN-LIKE PHRASE BANKS ----------
 SCAFFOLD_K2_FIRST = [
     "First, say what you’re trying to find. 😊",
-    "First, point to what the problem is asking.",
+    "First, point to what the question wants.",
     "First, tell me the goal in your own words.",
 ]
 SCAFFOLD_K2_NEXT = [
@@ -149,11 +147,6 @@ REFLECTIVE_QS = [
     "What tells you that matches the question?",
     "How does that connect to what’s being asked?",
 ]
-GUIDING_QS = [
-    "When you compare them, are you finding how many more, or how many fewer?",
-    "Which number should you start from to match the wording?",
-    "What labels would you put on each number to make the comparison clear?",
-]
 
 def _pick(seq, seed: str) -> str:
     if not seq: return ""
@@ -170,21 +163,18 @@ _TAG_OFF   = "[[LIKELY_OFF]]"
 
 # --- Grammar-aware operation rewrites (natural English) ---
 def _normalize_ops_phrasing(text: str) -> str:
-    # subtract X from Y → difference between Y and X
     text = re.sub(
         r"\b(subtract)\s+([^\.?\n]+?)\s+(from)\s+([^\.?\n]+?)([\.\?!])",
         lambda m: f"find the difference between {m.group(4)} and {m.group(2)}{m.group(5)}",
         text,
         flags=re.I,
     )
-    # “Y minus X” → “the difference between Y and X”
     text = re.sub(
         r"\b([A-Za-z0-9 _]+?)\s+minus\s+([A-Za-z0-9 _]+?)\b",
         r"the difference between \1 and \2",
         text,
         flags=re.I,
     )
-    # Others to softer verbs
     repl = {
         r"\badd\b": "combine",
         r"\bplus\b": "combine",
@@ -196,8 +186,6 @@ def _normalize_ops_phrasing(text: str) -> str:
     }
     for pat, rpl in repl.items():
         text = re.sub(pat, rpl, text, flags=re.I)
-
-    # If final question still has explicit op with two numerals → generic
     q_idx = text.rfind("?")
     if q_idx != -1:
         before = text[:q_idx]
@@ -218,7 +206,6 @@ def _split_micro_and_question(text: str):
     return micro, question
 
 def _limit_form(text: str, band: str) -> str:
-    # K-2 shorter
     max_sent = 3 if band == "K-2" else 4
     parts = re.split(r"(?<=[\.\?\!])\s+", text.strip())
     parts = [p.strip() for p in parts if p.strip()][:max_sent]
@@ -235,7 +222,6 @@ def _limit_form(text: str, band: str) -> str:
     return text
 
 def _simplify_for_k2(text: str) -> str:
-    # friendlier words + tiny sentences; light emojis allowed
     swaps = {
         r"\bdetermine\b": "find",
         r"\bidentify\b": "find",
@@ -246,7 +232,6 @@ def _simplify_for_k2(text: str) -> str:
     }
     for pat, rpl in swaps.items():
         text = re.sub(pat, rpl, text, flags=re.I)
-    # trim long clauses before comma
     text = re.sub(r",\s+and", " and", text)
     return text
 
@@ -261,19 +246,37 @@ def _pick_scaffold(level: str, band: str, seed: str) -> str:
         second = _pick(SCAFFOLD_UP_NEXT, "next-"+seed)
     return f"{first} {second}"
 
-def _extract_hidden_tag(text: str):
-    if _TAG_OK in text:
-        return "OK", text.replace(_TAG_OK, "")
-    if _TAG_OFF in text:
-        return "OFF", text.replace(_TAG_OFF, "")
-    return "OFF", text
+# ---- Apprentice Options Generator ----
+def _needs_options(text: str) -> bool:
+    # no options present yet?
+    return not re.search(r"(^|\n)\s*(A\)|B\)|•|-)\s+", text)
+
+def _build_options(focus: str, band: str) -> str:
+    f = (focus or "").lower()
+    # very light inference
+    if any(w in f for w in ["fewer", "more", "less", "difference", "compare"]):
+        if band == "K-2":
+            return "A) Add (put together)  B) Find the difference (how many more/less)"
+        return "A) Combine the amounts  B) Find the difference"
+    if any(w in f for w in ["rate", "per", "each", "speed", "ratio"]):
+        return "A) Combine counts  B) Compare as a rate"
+    if any(w in f for w in ["graph", "point", "slope", "line"]):
+        return "A) Pick a clear point  B) Match x and y"
+    # default general choices
+    if band == "K-2":
+        return "A) Add (put together)  B) Find the difference"
+    return "A) Combine the amounts  B) Compare how much more/less"
 
 def enforce_mathmate_style(text: str, level: str, focus: str, grade: str, auth: str, user_answer_like: bool) -> str:
     band = grade_band(grade)
 
     # 1) read + strip hidden tag
-    tag, stripped = _extract_hidden_tag(text or "")
-    t = stripped.strip()
+    tag = "OFF"
+    if text and _TAG_OK in text:
+        tag, text = "OK", text.replace(_TAG_OK, "")
+    elif text and _TAG_OFF in text:
+        tag, text = "OFF", text.replace(_TAG_OFF, "")
+    t = (text or "").strip()
 
     # 2) remove confirmations/answer-y phrases
     t = _CONFIRM_WORDS.sub(" ", t)
@@ -316,15 +319,22 @@ def enforce_mathmate_style(text: str, level: str, focus: str, grade: str, auth: 
             if not (t.lstrip().startswith("Mmm, let’s review the steps.") or t.lstrip().startswith("Let's check again—") or t.lstrip().startswith("Let’s step back for a sec.") ):
                 t = _pick(REVIEW_PROMPTS, focus) + " " + t
 
-    # 10) ensure one question or options
-    if "?" not in t and not re.search(r"(^|\n)\s*([\-•]|A\)|1\))", t):
+    # 10) Apprentice: ensure OPTIONS are present (without adding extra '?')
+    if (level or "").lower() == "apprentice" and _needs_options(t):
+        opts = _build_options(focus, band)
+        # add as a new line; no '?' added
+        t = f"{t}\n{opts}"
+
+    # 11) ensure one question or options
+    if "?" not in t and not re.search(r"(^|\n)\s*(A\)|B\)|•|-)\s+", t):
         t = t.rstrip(".!…") + " — what would you try next?"
 
-    # 11) avoid identical back-to-back bot outputs
+    # 12) avoid identical back-to-back bot outputs
     sig = hashlib.sha1(t.encode()).hexdigest()
     if sig == last_sig(level, focus, grade, auth):
         base = re.sub(r"\?.*$", "", t).rstrip(".!…")
-        t = f"{base}. {_pick(REFLECTIVE_QS, 'reflect-'+focus)}?"
+        alt_q = "What tells you that choice fits here?"
+        t = f"{base}. {alt_q}?"
     remember_sig(level, focus, grade, auth, t)
     return t.strip()
 
@@ -359,7 +369,7 @@ def home():
   #panel{position:sticky;bottom:0;background:var(--bg);padding:12px 0;border-top:1px solid var(--line)}
   #unlock{display:flex;gap:8px}
   input,button,select{font:inherit}
-  #password, textarea, select{padding:12px;border-radius:12px;border:1px solid var(--line);background:#fff;color:var(--text)}
+  #password, textarea, select{padding:12px;border-radius:12px;border:1px solid var(--line);background:#fff;color:{--text}}
   button{padding:12px 16px;border-radius:12px;border:1px solid var(--line);background:#111827;color:#fff;cursor:pointer;min-width:84px}
   button:disabled{opacity:.6;cursor:not-allowed}
   #composer{display:none;gap:10px;align-items:flex-end;flex-wrap:wrap}
@@ -451,7 +461,7 @@ function addBubble(who, text){
 function looksLikeProblem(text){
   const hasNums = /\\d/.test(text||'');
   const longish = (text||'').length >= 16;
-  const mathy = /(total|difference|sum|product|quotient|fraction|percent|area|perimeter|slope|graph|points|solve|x|y|how many)/i.test(text||'');
+  const mathy = /(total|difference|sum|product|quotient|fraction|percent|area|perimeter|slope|graph|points|solve|x|y|how many|fewer|more|less)/i.test(text||'');
   return (hasNums && longish) || mathy;
 }
 
@@ -530,7 +540,6 @@ sendBtn.onclick = async ()=>{
   if(!text && queuedImages.length===0) return;
   if(!AUTH) return;
 
-  // capture grade/level once
   if(!LEVEL || !GRADE){
     addBubble('MathMate', "Choose a **grade** and a **level** first (top of the box), then send your problem. 🙂");
     return;
@@ -609,7 +618,7 @@ def chat():
         style_line = ""
         lv = (level or "").lower()
         if lv == "apprentice":
-            style_line = "Apprentice: include 1–2 scaffold lines (natural verbs; no arithmetic) before your single question."
+            style_line = "Apprentice: include 1–2 scaffold lines (natural verbs; no arithmetic) before your single question, and add options if helpful."
             if band == "K-2":
                 style_line += " Use kid-friendly words and keep sentences short."
         elif lv == "rising hero":
