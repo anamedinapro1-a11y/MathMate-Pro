@@ -20,18 +20,33 @@ DEBUG    = os.getenv("DEBUG", "0") == "1"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ---------- LIGHTWEIGHT SESSION MEMORY (per level + focus + auth) ----------
-MEM = defaultdict(dict)  # MEM[key] = {"last_micro": str, "ts": float}
+# ---------- LIGHTWEIGHT SESSION MEMORY ----------
+# keyed by (level|focus|auth)
+MEM = defaultdict(dict)  # {"last_micro": str, "last_sig": str, "ts": float}
 
 def _session_key(level: str, focus: str, auth: str) -> str:
     raw = f"{(level or '').lower()}|{(focus or '').strip()}|{auth or ''}"
     return hashlib.sha1(raw.encode()).hexdigest()
 
 def remember_micro(level: str, focus: str, auth: str, micro: str):
-    MEM[_session_key(level, focus, auth)] = {"last_micro": (micro or "").strip(), "ts": time.time()}
+    key = _session_key(level, focus, auth)
+    d = MEM.get(key, {})
+    d["last_micro"] = (micro or "").strip()
+    d["ts"] = time.time()
+    MEM[key] = d
 
 def last_micro(level: str, focus: str, auth: str) -> str:
     return (MEM.get(_session_key(level, focus, auth)) or {}).get("last_micro", "")
+
+def remember_sig(level: str, focus: str, auth: str, text: str):
+    key = _session_key(level, focus, auth)
+    d = MEM.get(key, {})
+    d["last_sig"] = hashlib.sha1((text or "").encode()).hexdigest()
+    d["ts"] = time.time()
+    MEM[key] = d
+
+def last_sig(level: str, focus: str, auth: str) -> str:
+    return (MEM.get(_session_key(level, focus, auth)) or {}).get("last_sig", "")
 
 # ---------- SYSTEM PROMPTS ----------
 MATHMATE_PROMPT = """
@@ -42,52 +57,91 @@ ANCHORING
 • If the learner says “I don’t know,” give a tiny micro-lesson for THIS focus, then a smaller question.
 
 STYLE
-• Question-led. Respectful, encouraging, curious — never condescending. Do not say “correct/incorrect” or confirm correctness.
-• Screenshots: quickly check format (fraction vs decimal, x vs y), graph presence, and a clean point if relevant.
+• Natural, warm, and clear. Question-led. Respectful and curious — never condescending.
+• Do not say “correct/incorrect” or otherwise confirm correctness.
+• Screenshots: briefly check format (fraction vs decimal, x vs y), note any graph and a clean point.
 
 LEVELS
-• Apprentice — give 1–2 short scaffolding steps (verbs only; no arithmetic), define the first math term briefly, then ask ONE question.
-• Rising Hero — at most 1 short nudge if needed, then ONE question.
+• Apprentice — give 1–2 short scaffolding lines using natural verbs (no arithmetic), define the first math term briefly, then ask ONE question.
+• Rising Hero — one short nudge if needed, then ONE question.
 • Master — minimal; ask ONE question only.
 
 OUTPUT SHAPE
-• Micro-lesson (0–2 brief statements) and/or scaffolding (≤2 steps, verbs only) → EXACTLY ONE question (one “?” total).
-• No explicit operation names and no equations in your text.
+• Micro-lesson (0–2 brief statements) and/or scaffolding (≤2 lines) → EXACTLY ONE question (one “?” total), ≤4 sentences overall.
+• Avoid explicit operation names like add/subtract/multiply/divide and avoid equations or operator symbols in your wording.
 """
 
 GUIDE_RULES = """
 RESPONDING
 • Aside from the tiny micro-lesson/scaffold lines, respond ONLY with QUESTIONS or concise OPTION lists.
-• Do not confirm correctness. Do not give final answers. Avoid giving exact computation steps.
+• Do not give final answers or explicit arithmetic instructions.
 
 WHEN THE LEARNER PROPOSES AN ANSWER
-• Make a best-effort internal judgment (without revealing the result): LIKELY_OK vs LIKELY_OFF.
-• If LIKELY_OK: start your reply with “✅ Try it.” (encourage entering the answer), then a reflective question.
-• If LIKELY_OFF/UNCLEAR: DO NOT encourage entering it. Start with “Mmm, let’s review the steps.” or “Let’s check again—” then a guiding question.
+• Make a best-effort internal judgment: LIKELY_OK vs LIKELY_OFF (do not reveal the judgment).
+• If LIKELY_OK: start with “✅ Try it.” then a reflective question.
+• If LIKELY_OFF/UNCLEAR: do NOT encourage entering it; start with “Mmm, let’s review the steps.” or “Let’s check again—” then a guiding question.
 
-SCREENS/FORMAT
-• Ask early: “fraction or decimal?”, “which is x, which is y?”, “is there a graph — can you find a clean point?”, “what happens when you divide y by x?”
+FORMAT/SCREENSHOTS
+• Ask early: “fraction or decimal?”, “which is x and which is y?”, “is there a graph — can you find a clear point?”, “what happens when you divide y by x?”
 
 HIDDEN TAG (required)
-• At the very end of EVERY reply, append a hidden tag exactly as [[LIKELY_OK]] or [[LIKELY_OFF]] based on your internal judgment of the learner’s most recent proposed value (if any). If no answer was proposed, use [[LIKELY_OFF]]. Do NOT explain the tag.
+• Append exactly [[LIKELY_OK]] or [[LIKELY_OFF]] at the very end of EVERY reply, based on your private judgment about any just-proposed value; if no value was proposed, use [[LIKELY_OFF]]. Do not explain this tag.
 """
 
 HARD_CONSTRAINT = (
-    "Hard constraint: micro-lesson first (0–2 short statements), optionally 1–2 scaffold steps (verbs only), "
+    "Hard constraint: micro-lesson first (0–2 short statements), optionally 1–2 scaffold lines (natural verbs only), "
     "then EXACTLY ONE question (one '?'). ≤4 sentences total. "
-    "No explicit operation names. No equations. Stay anchored to the provided focus."
+    "Avoid operation names and equations. Stay anchored to the provided focus."
 )
+
+# ---------- HUMAN-LIKE PHRASE BANKS ----------
+SCAFFOLD_STARTS = [
+    "First, name what’s being asked.",
+    "Start by naming the goal.",
+    "Begin by saying what you’re trying to find.",
+]
+SCAFFOLD_NEXT = [
+    "Then, match each number to a role (x vs y or who/what).",
+    "Then, line up the two amounts you’re comparing.",
+    "Then, decide how the two quantities relate.",
+]
+REVIEW_PROMPTS = [
+    "Mmm, let’s review the steps.",
+    "Let’s check again—",
+    "Let’s step back for a sec.",
+]
+REFLECTIVE_QS = [
+    "What makes you confident that approach fits here?",
+    "What tells you that matches the question?",
+    "How does that connect to what’s being asked?",
+]
+GUIDING_QS = [
+    "When you compare them, what are you finding: how many more, or how many fewer?",
+    "Which quantity should you start from to match the wording?",
+    "What labels would you put on each number to make the comparison clear?",
+]
+
+def _pick(seq, seed: str) -> str:
+    # deterministic variety based on the focus/session
+    if not seq:
+        return ""
+    h = int(hashlib.sha1((seed or '').encode()).hexdigest(), 16)
+    return seq[h % len(seq)]
 
 # ---------- OUTPUT GUARDRAILS ----------
 _CONFIRM_WORDS = re.compile(r"\b(correct|right|exactly|nailed\s*it|that\s*works|you'?re\s*right|spot\s*on)\b", re.I)
-# include verb & keyword forms
+
+# operation tokens (verbs & keywords); we won't blindly replace; we rewrite clauses gracefully
 _OP_TOKENS = re.compile(
     r"\b(add|plus|sum|subtract|minus|difference|multiply|times|product|divide|divided\s+by|over|quotient)\b",
     re.I,
 )
-_EQN_BITS = re.compile(r"([=+\-*/^]|(?<!\w)%|\b\d+\s*/\s*\d+\b)")           # mask arithmetic/operators but not plain numerals
-_COORDS   = re.compile(r"\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)")   # mask (x, y)
+
+# mask explicit arithmetic/operators and coordinate pairs (we’ll rewrite wording first)
+_EQN_BITS = re.compile(r"([=+\-*/^]|(?<!\w)%|\b\d+\s*/\s*\d+\b)")
+_COORDS   = re.compile(r"\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)")
 _ANSWER_PH = re.compile(r"\b(the answer is|therefore|thus|equals|so you get)\b", re.I)
+
 _TAG_OK    = "[[LIKELY_OK]]"
 _TAG_OFF   = "[[LIKELY_OFF]]"
 
@@ -103,15 +157,15 @@ def _split_micro_and_question(text: str):
     if q_idx == -1:
         return text.strip(), ""
     micro = text[:q_idx].strip()
-    # best effort: last sentence containing '?'
     start = text.rfind(".", 0, q_idx)
     start = 0 if start == -1 else start + 1
     question = text[start:q_idx+1].strip()
     return micro, question
 
 def _limit_form(text: str) -> str:
+    # ≤4 sentences; exactly one '?'
     parts = re.split(r"(?<=[\.\?\!])\s+", text.strip())
-    parts = [p.strip() for p in parts if p.strip()][:4]  # ≤4 sentences (micro + 1–2 scaffolds + 1 question)
+    parts = [p.strip() for p in parts if p.strip()][:4]
     text = " ".join(parts) if parts else ""
     qs = [m.start() for m in re.finditer(r"\?", text)]
     if len(qs) == 0:
@@ -124,26 +178,24 @@ def _limit_form(text: str) -> str:
         text = "".join(buff)
     return text
 
-# --- Grammar-aware operation rewrites ---
+# --- Grammar-aware operation rewrites (natural English) ---
 def _normalize_ops_phrasing(text: str) -> str:
-    """
-    Make phrasing natural when the model uses operation words.
-    Avoid robotic 'that step' and avoid explicit arithmetic prompts like '19 - 5'.
-    """
-
-    # Clause-level rewrites for common patterns
-    # 1) "subtract X from Y" -> "find the difference between Y and X"
+    # 1) “subtract X from Y” → “find the difference between Y and X”
     text = re.sub(
         r"\b(subtract)\s+([^\.?\n]+?)\s+(from)\s+([^\.?\n]+?)([\.\?!])",
         lambda m: f"find the difference between {m.group(4)} and {m.group(2)}{m.group(5)}",
         text,
         flags=re.I,
     )
-
-    # 2) generic verbs
+    # 2) “Y minus X” in a clause (not necessarily the question)
+    text = re.sub(
+        r"\b([A-Za-z0-9 _]+?)\s+minus\s+([A-Za-z0-9 _]+?)\b",
+        r"the difference between \1 and \2",
+        text,
+        flags=re.I,
+    )
+    # 3) Simplify other verbs into gentle, non-robotic phrases
     replacements = {
-        r"\bsubtract\b": "find the difference between",
-        r"\bminus\b": "find the difference between",
         r"\badd\b": "combine",
         r"\bplus\b": "combine",
         r"\bmultiply\b": "scale",
@@ -155,50 +207,57 @@ def _normalize_ops_phrasing(text: str) -> str:
     for pat, repl in replacements.items():
         text = re.sub(pat, repl, text, flags=re.I)
 
-    # If the **question** still contains an explicit operation with two numerals (e.g., "What is 19 minus 5?")
-    # rewrite the final question generically.
+    # 4) If the final question still mentions an explicit operation with two numerals, make it generic.
     q_idx = text.rfind("?")
     if q_idx != -1:
         before = text[:q_idx]
-        question = text[q_idx-200 if q_idx-200>0 else 0:q_idx+1]
+        question = text[q_idx-220 if q_idx-220>0 else 0:q_idx+1]
         if re.search(r"\b(\d+)\s*(minus|plus|times|divided\s+by|over)\s*(\d+)\b", question, re.I):
-            question = "How many more is that?" if re.search(r"minus", question, re.I) else "What result do you get?"
-            text = before.strip() + (" " if before.strip() else "") + question
-        # also scrub leftover operator symbols in the question
-        question = re.sub(_EQN_BITS, "…", question)
+            # Use a human, non-leading question
+            question = "How many more (or fewer) is that?"
+            text = (before.strip() + " " + question).strip()
+    # Clean spacing
     text = re.sub(r"\s{2,}", " ", text).strip()
     return text
+
+def _vary_scaffold(level: str, seed: str) -> str:
+    if (level or "").lower() != "apprentice":
+        return ""
+    first = _pick(SCAFFOLD_STARTS, seed)
+    second = _pick(SCAFFOLD_NEXT, "next-"+seed)
+    return f"{first} {second}"
 
 def enforce_mathmate_style(text: str, level: str, focus: str, auth: str, user_answer_like: bool) -> str:
     # 1) read + strip hidden tag
     tag, stripped = _extract_hidden_tag(text or "")
     t = stripped.strip()
 
-    # 2) remove confirmations & answer-y phrases first
+    # 2) remove confirmations/answer-y phrases
     t = _CONFIRM_WORDS.sub(" ", t)
     t = _ANSWER_PH.sub("What makes you confident", t)
 
-    # 3) grammar-aware op rewrites BEFORE masking symbols (to preserve context)
+    # 3) grammar-aware rewrite BEFORE masking symbols
     t = _normalize_ops_phrasing(t)
 
-    # 4) now mask explicit arithmetic symbols & coords
+    # 4) mask explicit arithmetic symbols & coords
     t = _EQN_BITS.sub("…", t)
     t = _COORDS.sub("that point", t)
 
-    # 5) de-dupe micro-lesson within the same focus
+    # 5) de-dupe micro-lesson within focus
     micro, question = _split_micro_and_question(t)
-    prev = last_micro(level, focus, auth)
-    if micro and prev and micro.strip().lower() == prev.strip().lower():
+    prev_micro = last_micro(level, focus, auth)
+    if micro and prev_micro and micro.strip().lower() == prev_micro.strip().lower():
         t = question or "What would you try next?"
     else:
         if micro:
             remember_micro(level, focus, auth, micro)
 
-    # 6) Apprentice: if no “step” verbs present, add one tiny scaffold
-    if (level or "").lower() == "apprentice" and "step" not in t.lower():
-        t = "Identify what’s being asked and label x and y. " + t
+    # 6) Apprentice scaffolding (friendly, non-robotic)
+    if (level or "").lower() == "apprentice":
+        if not re.search(r"\bfirst\b|\bthen\b|\bstart\b|\bbegin\b|\bstep\b", t, re.I):
+            t = (_vary_scaffold(level, focus) + " " + t).strip()
 
-    # 7) shape: ≤4 sentences, exactly one '?'
+    # 7) shape & one-question rule
     t = _limit_form(t)
 
     # 8) Answer encouragement policy (ONLY if learner proposed a lone value)
@@ -207,13 +266,19 @@ def enforce_mathmate_style(text: str, level: str, focus: str, auth: str, user_an
             if not t.lstrip().startswith("✅ Try it"):
                 t = "✅ Try it. " + t
         else:
-            if not (t.lstrip().startswith("Mmm, let’s review the steps.") or t.lstrip().startswith("Let's check again—")):
-                t = "Mmm, let’s review the steps. " + t
-
-    # 9) ensure final question or options
+            if not (t.lstrip().startswith("Mmm, let’s review the steps.") or t.lstrip().startswith("Let's check again—") or t.lstrip().startswith("Let’s step back for a sec.") ):
+                t = _pick(REVIEW_PROMPTS, focus) + " " + t
+    # 9) ensure one question or options
     if "?" not in t and not re.search(r"(^|\n)\s*([\-•]|A\)|1\))", t):
         t = t.rstrip(".!…") + " — what would you try next?"
 
+    # 10) avoid identical back-to-back bot outputs
+    sig = hashlib.sha1(t.encode()).hexdigest()
+    if sig == last_sig(level, focus, auth):
+        # lightly vary with a different reflective question (still one '?')
+        base = re.sub(r"\?.*$", "", t).rstrip(".!…")
+        t = f"{base}. {_pick(REFLECTIVE_QS, 'reflect-'+focus)}?"
+    remember_sig(level, focus, auth, t)
     return t.strip()
 
 # ---------- HEALTH ----------
@@ -221,7 +286,7 @@ def enforce_mathmate_style(text: str, level: str, focus: str, auth: str, user_an
 def health():
     return "ok", 200
 
-# ---------- UI (same as before) ----------
+# ---------- UI ----------
 @app.get("/")
 def home():
     return """
@@ -299,7 +364,7 @@ const thumbs = document.getElementById('thumbs');
 
 let AUTH = '';
 let LEVEL = '';       // Apprentice | Rising Hero | Master
-let FOCUS = '';       // sticky anchor text for the current problem
+let FOCUS = '';       // sticky anchor for the current problem
 let queuedImages = [];
 
 function addBubble(who, text){
@@ -479,13 +544,13 @@ def chat():
         style_line = ""
         lv = (level or "").lower()
         if lv == "apprentice":
-            style_line = "Apprentice: include 1–2 scaffold steps (verbs only; no arithmetic) before your single question."
+            style_line = "Apprentice: include 1–2 scaffold lines (natural verbs; no arithmetic) before your single question."
         elif lv == "rising hero":
             style_line = "Rising Hero: one short nudge if needed, then your single question."
         elif lv == "master":
             style_line = "Master: minimal; ask one question only."
 
-        # Detect if the user just proposed a single numeric answer (e.g., "14", "3.5")
+        # Detect if the user just proposed a single numeric value (e.g., "8" or "3.5")
         user_answer_like = bool(re.fullmatch(r"\s*-?\d+(?:\.\d+)?\s*", text))
 
         messages = [
