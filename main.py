@@ -1,4 +1,5 @@
-import os, re
+import os, re, time, hashlib
+from collections import defaultdict
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -19,139 +20,161 @@ DEBUG    = os.getenv("DEBUG", "0") == "1"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ---------- OUTPUT GUARDRAILS (questions/options only + no confirmations) ----------
-_CONFIRM_WORDS = re.compile(r"\b(correct|right|exactly|nailed\s*it|that\s*works|you'?re\s*right)\b", re.I)
-# hide explicit operation hints
+# ---------- LIGHTWEIGHT SESSION MEMORY (per level + focus + auth) ----------
+MEM = defaultdict(dict)  # MEM[key] = {"last_micro": str, "ts": float}
+
+def _session_key(level: str, focus: str, auth: str) -> str:
+    raw = f"{(level or '').lower()}|{(focus or '').strip()}|{auth or ''}"
+    return hashlib.sha1(raw.encode()).hexdigest()
+
+def remember_micro(level: str, focus: str, auth: str, micro: str):
+    MEM[_session_key(level, focus, auth)] = {"last_micro": (micro or "").strip(), "ts": time.time()}
+
+def last_micro(level: str, focus: str, auth: str) -> str:
+    return (MEM.get(_session_key(level, focus, auth)) or {}).get("last_micro", "")
+
+# ---------- SYSTEM PROMPTS ----------
+MATHMATE_PROMPT = """
+MATHMATE — SOCRATIC GUIDE (Acton + Khan). You guide ages 13+. You never give final answers.
+
+ANCHORING
+• You receive a Focus Anchor for the current problem. Stay on it unless the learner clearly starts a new one (“new problem”).
+• If the learner says “I don’t know,” give a tiny micro-lesson for THIS focus, then a smaller question.
+
+STYLE
+• Question-led. Respectful, encouraging, curious — never condescending. Do not say “correct/incorrect” or confirm correctness.
+• Screenshots: quickly check format (fraction vs decimal, x vs y), graph presence, and a clean point if relevant.
+
+LEVELS
+• Apprentice — give 1–2 short scaffolding steps (verbs only; no arithmetic), define the first math term briefly, then ask ONE question.
+• Rising Hero — at most 1 short nudge if needed, then ONE question.
+• Master — minimal; ask ONE question only.
+
+OUTPUT SHAPE
+• Micro-lesson (0–2 brief statements) and/or scaffolding (≤2 steps, verbs only) → EXACTLY ONE question (one “?” total).
+• No explicit operation names and no equations in your text.
+"""
+
+GUIDE_RULES = """
+RESPONDING
+• Aside from the tiny micro-lesson/scaffold lines, respond ONLY with QUESTIONS or concise OPTION lists.
+• Do not confirm correctness. Do not give final answers. Avoid giving exact computation steps.
+
+WHEN THE LEARNER PROPOSES AN ANSWER
+• Make a best-effort internal judgment (without revealing the result): LIKELY_OK vs LIKELY_OFF.
+• If LIKELY_OK: start your reply with “✅ Try it.” (encourage entering the answer), then a reflective question.
+• If LIKELY_OFF/UNCLEAR: DO NOT encourage entering it. Start with “Mmm, let’s review the steps.” or “Let’s check again—” then a guiding question.
+
+SCREENS/FORMAT
+• Ask early: “fraction or decimal?”, “which is x, which is y?”, “is there a graph — can you find a clean point?”, “what happens when you divide y by x?”
+
+HIDDEN TAG (required)
+• At the very end of EVERY reply, append a hidden tag exactly as [[LIKELY_OK]] or [[LIKELY_OFF]] based on your internal judgment of the learner’s most recent proposed value (if any). If no answer was proposed, use [[LIKELY_OFF]]. Do NOT explain the tag.
+"""
+
+HARD_CONSTRAINT = (
+    "Hard constraint: micro-lesson first (0–2 short statements), optionally 1–2 scaffold steps (verbs only), "
+    "then EXACTLY ONE question (one '?'). ≤4 sentences total. "
+    "No explicit operation names. No equations. Stay anchored to the provided focus."
+)
+
+# ---------- OUTPUT GUARDRAILS ----------
+_CONFIRM_WORDS = re.compile(r"\b(correct|right|exactly|nailed\s*it|that\s*works|you'?re\s*right|spot\s*on)\b", re.I)
 _OP_NAMES = re.compile(r"\b(add|subtract|multiply|divide|plug|replace|simplify|distribute|factor|solve|isolate|cross[-\s]?multiply)\b", re.I)
-# raw operators/equations/inline fractions
-_EQN_BITS = re.compile(r"([=+\-*/^]|(?<!\w)%|\b\d+\s*/\s*\d+\b)")
-# coordinates like (4, 2.5)
-_COORDS = re.compile(r"\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)")
-# answer-revealy phrases
-_EXPLAINERS = re.compile(r"\b(the answer is|so you get|therefore|thus|equals)\b", re.I)
+_EQN_BITS = re.compile(r"([=+\-*/^]|(?<!\w)%|\b\d+\s*/\s*\d+\b)")           # mask arithmetic/operators
+_COORDS   = re.compile(r"\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)")   # mask (x, y)
+_ANSWER_PH = re.compile(r"\b(the answer is|therefore|thus|equals|so you get)\b", re.I)
+_TAG_OK    = "[[LIKELY_OK]]"
+_TAG_OFF   = "[[LIKELY_OFF]]"
 
-def _limit_sentences_and_questions(text: str) -> str:
+def _extract_hidden_tag(text: str):
+    if _TAG_OK in text:
+        return "OK", text.replace(_TAG_OK, "")
+    if _TAG_OFF in text:
+        return "OFF", text.replace(_TAG_OFF, "")
+    return "OFF", text  # default safe
+
+def _split_micro_and_question(text: str):
+    q_idx = text.rfind("?")
+    if q_idx == -1:
+        return text.strip(), ""
+    micro = text[:q_idx].strip()
+    # best effort: last sentence containing '?'
+    start = text.rfind(".", 0, q_idx)
+    start = 0 if start == -1 else start + 1
+    question = text[start:q_idx+1].strip()
+    return micro, question
+
+def _limit_form(text: str) -> str:
     parts = re.split(r"(?<=[\.\?\!])\s+", text.strip())
-    parts = [p.strip() for p in parts if p.strip()][:3]  # ≤3 sentences
+    parts = [p.strip() for p in parts if p.strip()][:4]  # ≤4 sentences (micro + 1–2 scaffolds + 1 question)
     text = " ".join(parts) if parts else ""
-
-    # exactly one '?'
-    q_positions = [m.start() for m in re.finditer(r"\?", text)]
-    if len(q_positions) == 0:
-        text = (text.rstrip(".!…") + " — what do you want to try next?").strip() if text else "What do you want to try first?"
-    elif len(q_positions) > 1:
-        last = q_positions[-1]
+    qs = [m.start() for m in re.finditer(r"\?", text)]
+    if len(qs) == 0:
+        text = (text.rstrip(".!…") + " — what would you try next?").strip() if text else "What would you try first?"
+    elif len(qs) > 1:
+        last = qs[-1]
         buff = []
         for i, ch in enumerate(text):
             buff.append("." if ch == "?" and i != last else ch)
         text = "".join(buff)
     return text
 
-def enforce_mathmate_style(text: str) -> str:
-    t = (text or "").strip()
-    if not t:
-        return "What do you want to try first?"
+def enforce_mathmate_style(text: str, level: str, focus: str, auth: str, user_answer_like: bool) -> str:
+    # 1) read + strip hidden tag
+    tag, stripped = _extract_hidden_tag(text or "")
+    t = stripped.strip()
 
-    # strip confirmations
+    # 2) remove confirmations, ops, equations, coords, answer-y phrases
     t = _CONFIRM_WORDS.sub(" ", t)
-    # avoid giving away operations
     t = _OP_NAMES.sub("that step", t)
-    # hide raw equations/operators
     t = _EQN_BITS.sub("…", t)
-    # avoid explicit coordinates
     t = _COORDS.sub("that point", t)
-    # avoid declarative “here’s the answer”
-    if _EXPLAINERS.search(t) and "?" not in t:
-        t = re.sub(_EXPLAINERS, "What makes you confident that", t)
+    t = _ANSWER_PH.sub("What makes you confident", t)
 
-    t = _limit_sentences_and_questions(t)
+    # 3) de-dupe micro-lesson within the same focus
+    micro, question = _split_micro_and_question(t)
+    prev = last_micro(level, focus, auth)
+    if micro and prev and micro.strip().lower() == prev.strip().lower():
+        t = question or "What would you try next?"
+    else:
+        if micro:
+            remember_micro(level, focus, auth, micro)
 
-    # ensure question/options ending
+    # 4) Apprentice: if no “step” verbs present, add one tiny scaffold
+    if (level or "").lower() == "apprentice" and "step" not in t.lower():
+        t = "Identify what’s being asked and label x and y. " + t
+
+    # 5) shape: ≤4 sentences, exactly one '?'
+    t = _limit_form(t)
+
+    # 6) Answer encouragement policy (ONLY if leaner proposed a lone value)
+    #    If user_answer_like is True:
+    #       - tag OK  => ensure prefix “✅ Try it.” (encouraging)
+    #       - tag OFF => ensure prefix “Mmm, let’s review the steps.” (no encouragement)
+    if user_answer_like:
+        if tag == "OK":
+            if not t.lstrip().startswith("✅ Try it"):
+                t = "✅ Try it. " + t
+        else:
+            if not (t.lstrip().startswith("Mmm, let’s review the steps.") or t.lstrip().startswith("Let's check again—")):
+                t = "Mmm, let’s review the steps. " + t
+    else:
+        # no tag-driven encouragement when no explicit answer was proposed
+        pass
+
+    # 7) ensure it ends with a question or options
     if "?" not in t and not re.search(r"(^|\n)\s*([\-•]|A\)|1\))", t):
         t = t.rstrip(".!…") + " — what would you try next?"
+
     return t.strip()
-
-# ---------- TUTOR PROMPT (anchored; your original) ----------
-MATHMATE_PROMPT = """
-MATHMATE — SOCRATIC TUTOR with MICRO-LESSONS (Acton + Khan)
-
-ANCHORING RULES (very important)
-• You will receive a Focus Anchor describing the current problem (numbers/scene/user text).
-• STAY on this focus. Do not switch topics or introduce new concepts/examples unless the learner clearly starts a new problem or says “new problem”.
-• If the learner says “I don’t know”, give a micro-lesson relevant to the current focus and ask a smaller clarifying question—do not change topics.
-
-GLOBAL STYLE
-• Teach-while-asking: MICRO-LESSON first (transferable idea/definition/pattern/pitfall), then ONE question.
-• Micro-lesson is brief and reusable; do NOT solve the problem or name the operation.
-• One-Question Rule: ask EXACTLY ONE question (1 sentence). No lists, no multi-steps, only one “?” total.
-• Never reveal an operation or write an equation. Do NOT say add/subtract/multiply/divide. Do NOT write expressions like 19−5.
-• Never give the final answer. Never say correct/incorrect. Use neutral acks (“got it”, “noted”).
-• Friendly + concise + 2–3 varied emojis (pool: 🔎🧩✨💡✅🙌📘📐📊📝🎯🚀🧠📷🔧🌟🤔).
-• Images: briefly state what you SEE (axes, labels, units, fractions/decimals) in a phrase, then micro-lesson + ONE question.
-
-LEVELS
-• Apprentice (precise + defined): use accurate math terms (sum, difference, product, quotient, factor, multiple, numerator/denominator, variable, expression, equation, inequality, rate, slope, intercept, area, perimeter, mean/median/mode, percent). On FIRST use this session, add a 2–6 word parenthesis definition, e.g., “quotient (result of division)”.
-• Rising Hero: micro-lesson only if needed (≤1 sentence). Light nudge.
-• Master: minimal. No micro-lesson unless asked.
-
-SESSION
-• You will receive: level and focus_anchor. If level is present, never ask for it again. If focus_anchor is present, do not change topics away from it.
-
-OUTPUT SHAPE
-• MICRO-LESSON (0–2 short statements, no “?”) → ONE question ending with “?”.
-• Up to 3 short options allowed (e.g., “A) …  B) …  C) …”).
-• Absolutely no equations and no operation names.
-"""
-
-# ---------- EXTRA GUIDE RULES (merged; 40/50/10 REMOVED) ----------
-GUIDE_RULES = """
-You are MathMate — a Socratic math GUIDE (not a teacher) for learners 13+, inspired by Acton Academy and using Khan Academy-style problems.
-
-RESPONDING
-- Aside from brief micro-lesson lines, respond ONLY with QUESTIONS or concise OPTION lists.
-- Never say or imply “correct,” “right,” or confirm correctness.
-- Do not explain further unless the learner directly asks.
-
-WHEN THE LEARNER PROPOSES AN ANSWER
-- Do NOT confirm it. Nudge thinking with:
-  • “Try it out.”
-  • “What made you choose that?”
-
-IF THE LEARNER IS STUCK OR OFF-TRACK
-- Ask process questions:
-  • “What step did you try first?”
-  • “Can you walk me through your thinking?”
-  • Graphs: “Does that point match the graph?”
-  • Equations: “What’s your first move?”
-  • Tables: “Are the numbers consistent?”
-
-SCREENSHOTS / FORMAT CHECKS
-- Clarify early:
-  • “Is the answer needed as a fraction or decimal?”
-  • “Which is x and which is y?”
-  • “Is there a graph? Can you find a clean point?”
-  • “What happens when you divide y by x?”
-- If reasoning is right but format mismatched:
-  • “Great thinking — does Khan want that as a decimal or a fraction?”
-
-MATH ACCURACY
-- Use a calculator/tool for arithmetic when needed; do not guess.
-- Double-check x vs y.
-- Match the exact output format Khan requests.
-"""
-
-HARD_CONSTRAINT = (
-    "Hard constraint: output a micro-lesson first (0–2 short statements, no '?'), "
-    "then EXACTLY ONE question (1 sentence) — total ≤ 3 sentences and only one '?'. "
-    "No equations. No operation names. Stay anchored to the provided focus."
-)
 
 # ---------- HEALTH ----------
 @app.get("/health")
 def health():
     return "ok", 200
 
-# ---------- UI ----------
+# ---------- UI (same as your version) ----------
 @app.get("/")
 def home():
     return """
@@ -394,36 +417,37 @@ def chat():
         if not user_content:
             user_content = [{"type": "text", "text": "Please analyze the attached image problem."}]
 
+        # Hints for model (session + focus)
         session_line = (
             f"Session meta: level={level or 'unknown'}. "
-            "If level is present, do not ask for it again; start tutoring immediately."
+            "If level is present, do not ask for it again; start guiding immediately."
         )
         focus_line = (
             f"Focus Anchor: {focus or '(no explicit anchor; infer from last user message/image)'} "
             "Stay on this focus and do not switch topics unless the learner clearly starts a new problem or says 'new problem'. "
-            "If the learner says 'I don’t know', provide a micro-lesson relevant to THIS focus and ask a smaller clarifying question."
+            "If the learner says 'I don’t know', provide a tiny micro-lesson relevant to THIS focus and ask a smaller clarifying question."
         )
 
-        apprentice_define_rule = ""
-        if (level or "").lower() == "apprentice":
-            apprentice_define_rule = (
-                "Apprentice rule: when you use a precise math term, include a brief 2–6 word "
-                "parenthetical definition on its FIRST appearance this session; do not repeat unless asked."
-            )
-        intensity_line = ""
-        if (level or "").lower() == "rising hero":
-            intensity_line = "Rising Hero style: add a tiny micro-lesson only if needed; one light nudge."
-        elif (level or "").lower() == "master":
-            intensity_line = "Master style: minimal; no micro-lesson unless asked; one tiny question."
+        # Small Apprent/Rising/Master style nudge
+        style_line = ""
+        lv = (level or "").lower()
+        if lv == "apprentice":
+            style_line = "Apprentice: include 1–2 scaffold steps (verbs only; no arithmetic) before your single question."
+        elif lv == "rising hero":
+            style_line = "Rising Hero: one short nudge if needed, then your single question."
+        elif lv == "master":
+            style_line = "Master: minimal; ask one question only."
+
+        # Detect if the user just proposed a single numeric answer (e.g., "14", "3.5")
+        user_answer_like = bool(re.fullmatch(r"\s*-?\d+(?:\.\d+)?\s*", text))
 
         messages = [
             {"role": "system", "content": MATHMATE_PROMPT},
-            {"role": "system", "content": GUIDE_RULES},   # merged GUIDE (no 40/50/10)
+            {"role": "system", "content": GUIDE_RULES},
+            {"role": "system", "content": HARD_CONSTRAINT},
             {"role": "system", "content": focus_line},
             {"role": "system", "content": session_line},
-            {"role": "system", "content": apprentice_define_rule},
-            {"role": "system", "content": intensity_line},
-            {"role": "system", "content": HARD_CONSTRAINT},
+            {"role": "system", "content": style_line},
             {"role": "user", "content": user_content},
         ]
 
@@ -433,7 +457,9 @@ def chat():
             messages=messages,
         )
         raw = completion.choices[0].message.content
-        return jsonify(reply=enforce_mathmate_style(raw))
+        auth = request.headers.get("X-Auth","")
+        reply = enforce_mathmate_style(raw, level, focus, auth, user_answer_like)
+        return jsonify(reply=reply)
 
     except Exception as e:
         if DEBUG:
