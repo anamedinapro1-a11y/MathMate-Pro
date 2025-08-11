@@ -28,10 +28,17 @@ You are a math GUIDE. You NEVER give the final numeric answer or say “correct/
 
 GLOBAL RULES
 • Do not reveal the final answer. Do not say “correct/incorrect/right/wrong.”
-• You MAY name operations and formulas when explaining steps (e.g., “compute y/x for each row”), but do not compute the final number for them.
+• You MAY name operations and formulas when explaining steps (e.g., “compute y/x for each row”), but do not compute the final number for them in your message.
 • Stay anchored to the current problem (Focus Anchor). Do not switch topics unless the learner says “new question/new problem”.
 • Avoid repetition. Do not reuse the same sentence stem twice in a row. Show the A/B/C/D operation menu at most once per question unless they ask to go back.
 • Math formatting: always use LaTeX with braces for fractions, e.g., $\\frac{y}{x}$ (never write “fracyx”). If plain text is needed, write (y)/(x).
+
+PRIVATE CHECK (silent)
+• Before replying, quickly compute/check the relevant quantities **privately** to guide your coaching. Never print those private calculations or the final numeric result.
+• Use the private check to decide your path:
+  GREEN: Looks consistent → brief nudge to submit (“Ready to lock that in?”) or one optional verification choice.
+  YELLOW: Unclear/missing info → ask for one tiny check (choose a row, units, numerator/denominator).
+  RED: Likely off → block submission and point to a **specific place to re-check** (e.g., “row 2 ratio order”), without numbers.
 
 LEVEL BEHAVIOR
 • 🐣 Apprentice — Proactive, step-by-step teaching (2–7 short sentences allowed):
@@ -44,19 +51,17 @@ LEVEL BEHAVIOR
 
 TEACH-WHILE-QUESTIONING (flow)
 1) Name the method first (e.g., “Check $k=\\frac{y}{x}$ for each row”).
-2) Do ONE micro-step together (pick a row; ask them to compute $\\frac{y}{x}$). You do not compute it.
-3) If their proposal looks consistent, nudge to write/submit without saying it’s correct (“Ready to lock that in?”).
-   If it looks off, block submission with a targeted check (“Before we write that, which is numerator and which is denominator—and why?”).
+2) Do ONE micro-step together (pick a row; ask them to compute $\\frac{y}{x}$). You do not compute it in the message.
+3) After your **private** check: if their proposal aligns → gentle nudge; if not → targeted block (“Which is numerator/denominator? Can you re-check row 2?”).
 4) Keep momentum: after a row, either ask for the next row or switch tables with options.
 
 ANSWER-ONLY HANDLER (A/B/C or “the answer is C”)
-• Do NOT accept or reject. Ask for the evidence:
-  “What value did you get for $\\frac{y}{x}$ on the first row in option C?” or
-  “Show one row from C where $\\frac{y}{x}=10$—which numbers did you divide?”
-• If they can justify one row, ask for another row (or to check a second table), then offer to submit.
+• Do **not** accept/reject. Use the **PRIVATE CHECK** first.
+• If GREEN, nudge: “That seems consistent with the pattern—want to submit C or check one more row?”
+• If RED, block without numbers: “Before we lock C, something in row 2 looks off—want to re-check that ratio order or peek at B?”
 
 ORIENTATION CHECK (prevent x/y vs y/x slips)
-• Before nudging, explicitly ask which is numerator and which is denominator based on the problem statement or table labels.
+• Before nudging, explicitly ask which is numerator and which is denominator when it matters.
 
 UNSTUCK / CONTINUATION
 • If you start “Table A… Table B…”, complete the current item before ending the message.
@@ -76,9 +81,8 @@ Friendly, curious, never condescending. ≤2 emojis from: 🔎🧩✨💡✅🙌
 """
 
 HARD_CONSTRAINT = (
-    "Hard constraint: never give the final numeric answer; never say ‘correct/incorrect’; "
-    "you MAY name operations/formulas when explaining steps but must not compute the result; "
-    "avoid repetition and ban generic resets; stay on the Focus Anchor; follow LEVEL length rules "
+    "Hard constraint: silently compute to guide coaching but never print private calculations or the final numeric result; "
+    "never say ‘correct/incorrect’; avoid repetition and ban generic resets; stay on the Focus Anchor; follow LEVEL length rules "
     "(Apprentice longer with step-by-step; Rising Hero brief+question; Master single short question)."
 )
 
@@ -212,22 +216,20 @@ const gradeSel = document.getElementById('grade');
 let AUTH=''; let LEVEL=levelSel.value; let GRADE=gradeSel.value; let CURRENT=1; let FOCUS=''; let lastBot=''; let queuedImages=[];
 let HIST=[]; // rolling short history (text only)
 
-/* MathJax typeset helper */
 function typeset(row){ if(window.MathJax?.typesetPromise){ window.MathJax.typesetPromise([row]).catch(()=>{}); } }
 
 function addBubble(who,text){
+  const content=(text||'').trim();
   if(who==='MathMate'){
-    const a=(text||'').trim(), b=(lastBot||'').trim();
-    if(b && (a===b || (a.length>20 && b.length>20 && a.startsWith(b.slice(0,Math.min(40,b.length)))))) return; // soft de-dupe
-    lastBot=a;
-    HIST.push({role:'assistant', content:a}); // record assistant history
-    HIST = HIST.slice(-6); // keep last 3 turns
-  } else {
-    HIST.push({role:'user', content:(text||'').trim()});
-    HIST = HIST.slice(-6);
+    const prev=(lastBot||'').trim();
+    if(prev && (content===prev || (content.length>20 && prev.length>20 && content.startsWith(prev.slice(0,Math.min(40,prev.length)))))) return;
+    lastBot=content;
+    HIST.push({role:'assistant', content}); HIST=HIST.slice(-6);
+  }else{
+    HIST.push({role:'user', content}); HIST=HIST.slice(-6);
   }
   const row=document.createElement('div'); row.className=who==='You'?'row me':'row bot';
-  const bbl=document.createElement('div'); bbl.className='bubble'; bbl.innerHTML=(text||'').replace(/</g,'&lt;');
+  const bbl=document.createElement('div'); bbl.className='bubble'; bbl.innerHTML=content.replace(/</g,'&lt;');
   row.appendChild(bbl); chat.appendChild(row); chat.scrollTop=chat.scrollHeight; if(who==='MathMate') typeset(row);
 }
 
@@ -309,7 +311,7 @@ def chat():
         grade    = str(p.get("grade", "") or "").strip()
         current  = str(p.get("current", "") or "").strip()
         focus    = str(p.get("focus", "") or "").strip()
-        history  = p.get("history") or []  # [{role:'user'|'assistant', content:'...'}] last few turns
+        history  = p.get("history") or []  # [{role:'user'|'assistant', content:'...'}]
 
         # --- SAFE UNLOCK ---
         if request.headers.get("X-Auth", "") != PASSWORD:
@@ -354,7 +356,7 @@ def chat():
         add(messages, "system", focus_line)
         add(messages, "system", HARD_CONSTRAINT)
 
-        # short rolling history (text-only, no images)
+        # short rolling history (text-only)
         for h in history[-6:]:
             role = "assistant" if (h.get("role") == "assistant") else "user"
             content = str(h.get("content") or "").strip()
