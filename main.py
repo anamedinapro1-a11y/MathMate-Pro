@@ -76,82 +76,102 @@ def home():
 <!doctype html>
 <meta charset="utf-8" />
 <title>🔒 MathMate Pro</title>
+
+<!-- MathJax for pretty fractions/equations -->
+<script>
+window.MathJax = { tex: { inlineMath: [['$', '$'], ['\\\\(', '\\\\)']] }, svg: { fontCache: 'global' } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+
 <style>
-  :root{--bg:#fff;--text:#0f172a;--muted:#64748b;--line:#e2e8f0;--me:#e6f0ff;--bot:#f8fafc}
+  :root{--bg:#fff;--text:#0f172a;--muted:#64748b;--line:#e2e8f0;--me:#e6f0ff;--bot:#f8fafc;--accent:#111827}
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial}
-  header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);padding:18px 16px;text-align:center}
-  header h1{margin:0;font-size:22px;letter-spacing:.2px}
+
+  /* Top header stays the same look */
+  header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);padding:12px 16px;z-index:10;text-align:center}
+  h1{margin:0;font-size:22px;letter-spacing:.2px}
+
   main{display:flex;justify-content:center}
-  .wrap{width:100%;max-width:900px;padding:16px}
-  #chat{min-height:58vh;max-height:72vh;overflow:auto;padding:12px 4px}
+  .wrap{width:100%;max-width:1400px;padding:16px}
+
+  #chat{min-height:52vh;max-height:64vh;overflow:auto;padding:12px 4px}
   .row{display:flex;margin:10px 0}
-  .bubble{max-width:72%;padding:12px 14px;border:1px solid var(--line);border-radius:16px;line-height:1.5;white-space:pre-wrap}
+  .bubble{max-width:78%;padding:12px 14px;border:1px solid var(--line);border-radius:16px;line-height:1.55;white-space:pre-wrap}
   .me{justify-content:flex-end}
   .me .bubble{background:var(--me)}
   .bot{justify-content:flex-start}
   .bot .bubble{background:var(--bot)}
   .sys{color:var(--muted);text-align:center;font-style:italic}
-  #panel{position:sticky;bottom:0;background:var(--bg);padding:12px 0;border-top:1px solid var(--line)}
-  input,button,select{font:inherit}
+
+  #panel{position:sticky;bottom:0;background:var(--bg);padding:14px 0;border-top:1px solid var(--line)}
   #unlock{display:flex;gap:8px}
-  #password, textarea, select{padding:12px;border-radius:12px;border:1px solid var(--line);background:#fff;color:var(--text)}
-  button{padding:12px 16px;border-radius:12px;border:1px solid var(--line);background:#111827;color:#fff;cursor:pointer;min-width:84px}
+  input,button,select,textarea{font:inherit}
+  input,select{padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:#fff;color:var(--text)}
+  button{padding:12px 16px;border-radius:12px;border:1px solid var(--line);background:var(--accent);color:#fff;cursor:pointer;min-width:84px}
   button:disabled{opacity:.6;cursor:not-allowed}
-  #composer{display:none;gap:10px;align-items:flex-end;flex-wrap:wrap}
-  #left{flex:1;display:flex;flex-direction:column;gap:8px;min-width:300px}
-  textarea{flex:1;resize:vertical;min-height:110px;max-height:260px}
-  #drop{border:1px dashed var(--line);border-radius:12px;padding:10px;text-align:center;color:var(--muted)}
-  #thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
-  .thumb{width:80px;height:80px;border:1px solid var(--line);border-radius:8px;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden}
+
+  /* ONE big card with grade/level + text + images */
+  #composer{display:none;align-items:stretch;gap:12px}
+  .inputCard{flex:1;border:1px solid var(--line);border-radius:16px;background:#fff;display:flex;flex-direction:column;overflow:hidden;transition:box-shadow .2s,border-color .2s}
+  .inputCard.drag{border-color:#60a5fa;box-shadow:0 0 0 3px rgba(96,165,250,.25)}
+  .inputHeader{display:flex;gap:16px;align-items:center;justify-content:flex-start;padding:10px 12px;border-bottom:1px solid var(--line);background:#f9fafb}
+  .inputHeader label{display:flex;align-items:center;gap:8px;color:var(--text)}
+  .inputArea{padding:10px}
+  textarea{width:100%;min-height:150px;max-height:360px;resize:vertical;padding:14px;border-radius:12px;border:1px solid var(--line);outline:none;background:#fff;color:var(--text)}
+  .inputFooter{border-top:1px dashed var(--line);padding:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .addBtn{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border:1px dashed var(--line);border-radius:12px;color:var(--muted);background:#fff;cursor:pointer}
+  .thumbs{display:flex;gap:8px;flex-wrap:wrap}
+  .thumb{width:72px;height:72px;border:1px solid var(--line);border-radius:8px;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden}
   .thumb img{max-width:100%;max-height:100%}
-  small.hint{color:var(--muted)}
-  .row.controls{display:flex;gap:8px;align-items:center;margin-top:8px}
+  .sendCol{display:flex;align-items:flex-end}
 </style>
 
 <header><h1>🔒 MathMate Pro</h1></header>
+
 <main><div class="wrap">
   <div id="chat"><div class="sys">Type the password to unlock.</div></div>
 
   <div id="panel">
     <div id="unlock">
-      <input id="password" placeholder="Type password…" />
+      <input id="password" placeholder="Type the password to unlock." style="flex:1" />
       <button id="unlockBtn">Unlock</button>
     </div>
 
     <div id="composer">
-      <div class="row controls">
-        <label>Grade:
-          <select id="grade">
-            <option>6</option><option>7</option><option>8</option><option>9</option>
-          </select>
-        </label>
-        <label>Level:
-          <select id="level">
-            <option>Apprentice</option>
-            <option>Rising Hero</option>
-            <option>Master</option>
-          </select>
-        </label>
-        <label>Total Qs:
-          <select id="total">
-            <option value="">—</option>
-            <option>4</option><option>5</option><option>6</option><option>7</option>
-            <option>8</option><option>10</option><option>12</option><option>15</option>
-          </select>
-        </label>
-      </div>
+      <div class="inputCard" id="inputCard">
+        <div class="inputHeader">
+          <label>Grade:
+            <select id="grade">
+              <option value="K">K</option>
+              <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
+              <option selected>6</option><option>7</option><option>8</option><option>9</option><option>10</option>
+              <option>11</option><option>12</option>
+            </select>
+          </label>
+          <label>Level:
+            <select id="level">
+              <option selected>Apprentice</option>
+              <option>Rising Hero</option>
+              <option>Master</option>
+            </select>
+          </label>
+        </div>
 
-      <div id="left">
-        <textarea id="msg" placeholder="Send a screenshot or paste the problem. Say “new question” when you move on, or “new problem” to reset focus. (Shift+Enter = newline)"></textarea>
-        <div id="drop">
-          <label for="fileBtn">➕ Add images (PNG/JPG) — drag & drop or click</label>
-          <input id="fileBtn" type="file" accept="image/*" multiple />
-          <div id="thumbs"></div>
-          <small class="hint">Images are analyzed with your prompt (vision).</small>
+        <div class="inputArea">
+          <textarea id="msg" placeholder="Type here and drag/drop or paste images into this box. (Shift+Enter = newline)"></textarea>
+          <input id="fileBtn" type="file" accept="image/*" multiple style="display:none" />
+        </div>
+
+        <div class="inputFooter">
+          <button id="addBtn" class="addBtn" type="button">➕ Add images</button>
+          <div id="thumbs" class="thumbs"></div>
         </div>
       </div>
-      <button id="sendBtn">Send</button>
+
+      <div class="sendCol">
+        <button id="sendBtn">Send</button>
+      </div>
     </div>
   </div>
 </div></main>
@@ -160,125 +180,90 @@ def home():
 const chat = document.getElementById('chat');
 const unlock = document.getElementById('unlock');
 const composer = document.getElementById('composer');
+const inputCard = document.getElementById('inputCard');
 const msgBox = document.getElementById('msg');
 const pwdBox = document.getElementById('password');
 const unlockBtn = document.getElementById('unlockBtn');
 const sendBtn = document.getElementById('sendBtn');
 const fileBtn = document.getElementById('fileBtn');
+const addBtn = document.getElementById('addBtn');
 const thumbs = document.getElementById('thumbs');
 const levelSel = document.getElementById('level');
-const totalSel = document.getElementById('total');
+const gradeSel = document.getElementById('grade');
 
-let AUTH = '';
-// session state (client-side)
-let LEVEL = 'Apprentice';
-let TOTAL = '';
-let CURRENT = 1;
-let PLAN_DONE = false;
-let FOCUS = '';
-let lastBot = '';
-let queuedImages = [];
+let AUTH=''; let LEVEL=levelSel.value; let GRADE=gradeSel.value; let CURRENT=1; let FOCUS=''; let lastBot=''; let queuedImages=[];
 
-function addBubble(who, text){
+function typeset(row){ if(window.MathJax?.typesetPromise){ window.MathJax.typesetPromise([row]).catch(()=>{}); } }
+
+function addBubble(who,text){
   if(who==='MathMate'){
-    // soft duplicate guard (skip near-identical repeats)
-    const a = (text||'').trim();
-    const b = (lastBot||'').trim();
-    if(b && (a===b || (a.length>20 && b.length>20 && a.startsWith(b.slice(0, Math.min(40,b.length)))))) return;
-    lastBot = a;
+    const a=(text||'').trim(), b=(lastBot||'').trim();
+    if(b && (a===b || (a.length>20 && b.length>20 && a.startsWith(b.slice(0,Math.min(40,b.length)))))) return;
+    lastBot=a;
   }
-  const row = document.createElement('div');
-  row.className = who === 'You' ? 'row me' : 'row bot';
-  const b = document.createElement('div');
-  b.className = 'bubble';
-  b.innerHTML = (text||'').replace(/</g,'&lt;');
-  row.appendChild(b);
-  chat.appendChild(row);
-  chat.scrollTop = chat.scrollHeight;
+  const row=document.createElement('div'); row.className=who==='You'?'row me':'row bot';
+  const bbl=document.createElement('div'); bbl.className='bubble'; bbl.innerHTML=(text||'').replace(/</g,'&lt;');
+  row.appendChild(bbl); chat.appendChild(row); chat.scrollTop=chat.scrollHeight; if(who==='MathMate') typeset(row);
 }
 
-function parseInt1(text){
-  const m = (text||'').match(/\\d{1,3}/);
-  return m ? parseInt(m[0],10) : null;
-}
-
-// heuristics for focus anchoring
-function looksLikeProblem(text){
-  const hasNums = /\\d/.test(text||'');
-  const longish = (text||'').length >= 16;
-  const mathy = /(total|difference|sum|product|quotient|fraction|percent|rate|area|perimeter|slope|graph|table|equation|x|y)/i.test(text||'');
-  return (hasNums && longish) || mathy;
-}
-function updateFocus(text, imgCount){
-  if(/\\bnew question\\b|\\bnext question\\b/i.test(text||'')){ CURRENT = Math.max(1, CURRENT+1); return; }
-  if(/\\bnew problem\\b/i.test(text||'')) { FOCUS = ''; return; }
-  if(imgCount>0) { FOCUS = '(image problem)'; return; }
-  if(looksLikeProblem(text)){ FOCUS = text.slice(0, 300); }
+function looksLikeProblem(t){const has=/\\d/.test(t||'');const long=(t||'').length>=16;const math=/(total|difference|sum|product|quotient|fraction|percent|rate|area|perimeter|slope|graph|table|equation|x|y)/i.test(t||'');return (has&&long)||math;}
+function updateFocus(text,imgCount){
+  if(/\\bnew question\\b|\\bnext question\\b/i.test(text||'')){ CURRENT=Math.max(1,CURRENT+1); return; }
+  if(/\\bnew problem\\b/i.test(text||'')){ FOCUS=''; return; }
+  if(imgCount>0){ FOCUS='(image problem)'; return; }
+  if(looksLikeProblem(text)){ FOCUS=text.slice(0,300); }
 }
 
 async function post(payload){
-  const r = await fetch('/chat', {
-    method:'POST',
-    headers:{'Content-Type':'application/json','X-Auth':AUTH},
-    body: JSON.stringify({ ...payload, level: LEVEL, total: TOTAL, current: CURRENT, plan_done: PLAN_DONE, focus: FOCUS })
-  });
+  const r=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json','X-Auth':AUTH},body:JSON.stringify({...payload,level:LEVEL,grade:GRADE,current:CURRENT,focus:FOCUS})});
   return r.json();
 }
 
-function addThumb(src){
-  const d = document.createElement('div'); d.className = 'thumb';
-  const img = document.createElement('img'); img.src = src; d.appendChild(img); thumbs.appendChild(d);
+function addThumb(src){ const d=document.createElement('div'); d.className='thumb'; const img=document.createElement('img'); img.src=src; d.appendChild(img); thumbs.appendChild(d); }
+async function filesToDataURLs(files){
+  for(const f of files){ if(!f.type.startsWith('image/')) continue;
+    const fr=new FileReader(); const p=new Promise((res,rej)=>{fr.onload=()=>res(fr.result);fr.onerror=rej;}); fr.readAsDataURL(f);
+    const url=await p; queuedImages.push(url); addThumb(url);
+  }
 }
-function fileToDataURL(file){
-  return new Promise((res, rej)=>{ const fr = new FileReader(); fr.onload=()=>res(fr.result); fr.onerror=rej; fr.readAsDataURL(file); });
-}
-fileBtn.onchange = async (e)=>{
-  for(const f of e.target.files){ const url = await fileToDataURL(f); queuedImages.push(url); addThumb(url); }
-  fileBtn.value = '';
-};
 
-unlockBtn.onclick = async ()=>{
-  const pw = (pwdBox.value||'').trim(); if(!pw) return;
+addBtn.onclick=()=>fileBtn.click();
+fileBtn.onchange=async (e)=>{ await filesToDataURLs(e.target.files); fileBtn.value=''; };
+
+['dragenter','dragover'].forEach(ev=> inputCard.addEventListener(ev,(e)=>{ e.preventDefault(); inputCard.classList.add('drag'); }));
+['dragleave','dragend','drop'].forEach(ev=> inputCard.addEventListener(ev,(e)=>{ e.preventDefault(); inputCard.classList.remove('drag'); }));
+inputCard.addEventListener('drop', async (e)=>{ await filesToDataURLs(e.dataTransfer.files); });
+
+msgBox.addEventListener('paste', async (e)=>{
+  const items=e.clipboardData?.items; if(!items) return;
+  const files=[]; for(const it of items){ if(it.type && it.type.startsWith('image/')) files.push(it.getAsFile()); }
+  if(files.length){ e.preventDefault(); await filesToDataURLs(files); }
+});
+
+unlockBtn.onclick=async ()=>{
+  const pw=(pwdBox.value||'').trim(); if(!pw) return;
   addBubble('You','••••••••');
-  const data = await post({ message: pw });
+  const data=await post({message:pw});
   addBubble('MathMate', data.reply ?? data.error ?? '(error)');
-  if((data.reply||'').startsWith('🔓')){
-    AUTH = pw; unlock.style.display='none'; composer.style.display='flex';
-    msgBox.focus();
-  }
+  if((data.reply||'').startsWith('🔓')){ AUTH=pw; unlock.style.display='none'; composer.style.display='flex'; msgBox.focus(); }
 };
 
-levelSel.onchange = ()=>{ LEVEL = levelSel.value; };
-totalSel.onchange = ()=>{ TOTAL = totalSel.value; PLAN_DONE = false; };
+levelSel.onchange=()=>{ LEVEL=levelSel.value; };
+gradeSel.onchange=()=>{ GRADE=gradeSel.value; };
 
-sendBtn.onclick = async ()=>{
-  const text = (msgBox.value||'').trim();
-  if(!text && queuedImages.length===0) return;
-
-  // announce 40/50/10 once when we have total + apprentice/rising
-  if(!PLAN_DONE && TOTAL && (LEVEL==='Apprentice' || LEVEL==='Rising Hero')){
-    addBubble('MathMate', "Here’s our plan 💪  40%: I’ll guide • 50%: you teach me • 10%: I’ll be quiet unless you ask.");
-    PLAN_DONE = true;
-  } else if(LEVEL==='Master' && !PLAN_DONE){
-    addBubble('MathMate', "Okay. You lead—what’s your first move?");
-    PLAN_DONE = true;
-  }
-
+sendBtn.onclick=async ()=>{
+  const text=(msgBox.value||'').trim(); if(!text && queuedImages.length===0) return;
   updateFocus(text, queuedImages.length);
-  addBubble('You', text || '(image(s) only)');
-  msgBox.value = ''; sendBtn.disabled = true;
-  try{
-    const data = await post({ message: text, images: queuedImages });
-    addBubble('MathMate', (data.reply ?? data.error ?? '(error)'));
-  }finally{
-    sendBtn.disabled = false; queuedImages = []; thumbs.innerHTML = ''; msgBox.focus();
-  }
+  addBubble('You', text || '(image(s) only)'); msgBox.value=''; sendBtn.disabled=true;
+  try{ const data=await post({message:text,images:queuedImages}); addBubble('MathMate',(data.reply ?? data.error ?? '(error)')); }
+  finally{ sendBtn.disabled=false; queuedImages=[]; thumbs.innerHTML=''; msgBox.focus(); }
 };
 
-msgBox.addEventListener('keydown', (e)=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendBtn.click(); }});
-pwdBox.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); unlockBtn.click(); }});
+msgBox.addEventListener('keydown',(e)=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendBtn.click(); }});
+pwdBox.addEventListener('keydown',(e)=>{ if(e.key==='Enter'){ e.preventDefault(); unlockBtn.click(); }});
 </script>
 """
+
 # ---------- CHAT (vision + meta + anchor) ----------
 @app.post("/chat")
 def chat():
