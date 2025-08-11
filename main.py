@@ -19,7 +19,7 @@ DEBUG    = os.getenv("DEBUG", "0") == "1"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ---------- MATHMATE PROMPT (level + grade aware) ----------
+# ---------- PROMPT (unchanged logic from last version) ----------
 MATHMATE_PROMPT = """
 🎯 MATHMATE — Socratic, Acton + Khan style, vision-capable.
 
@@ -33,46 +33,35 @@ GLOBAL RULES
 • Offer any A/B/C/D operation menu at most ONCE per question unless the learner asks to go back.
 • Do not reuse the same sentence stem twice in a row. Vary wording. Avoid repeating generic instructions.
 • Prefer options or one guiding question per turn; explanations depend on LEVEL (see below).
+• You may format math using LaTeX inline delimiters $...$ or \\( ... \\). Example: $\\frac{y}{x}$, $20\\div 2$.
 
 LEVEL BEHAVIOR
 • 🐣 Apprentice — Proactive, gentle teaching:
-  - You MAY explain proactively in small steps (short, clear sentences) and you may use 2–6 sentences total.
-  - Always include at least one guiding question or a 2–4 option choice.
-  - Use very friendly, concrete language and micro-steps if the learner is young (see Grade Guide).
+  - You MAY explain proactively in small steps (2–6 short sentences) and you must include a guiding question or options.
 • 🦸 Rising Hero — Lighter coaching:
   - You MAY include a brief explanation (≤2 short sentences) AND one guiding question (or a small options set). Total 1–3 sentences.
 • 🧠 Master — Minimal:
   - No explanation unless asked directly. Ask one tight question; keep it to 1 sentence.
 
 EVALUATE & NUDGE (without saying “correct”)
-• If the learner proposes an answer that appears consistent with the problem, gently encourage submission WITHOUT stating it’s correct, e.g.,
-  “Looks consistent with your steps—want to lock that in?” or “Ready to submit that?”
-• If it appears off, do NOT let them lock it in. Ask a targeted check that blocks the submission gracefully:
-  “Before we write that, which two numbers are you comparing and in what order?” or
-  “Quick check: are the units the same?” or
-  “Does the point you chose sit on the line in the graph?”
+• If the learner’s proposed answer looks consistent, gently encourage submitting (without saying it’s correct).
+• If it looks off, do NOT let them lock it in; ask a targeted check that blocks submission gracefully.
 
-KHAN SCREENSHOT / FORMAT AWARENESS
+KHAN / FORMAT AWARENESS
 • Check required format (fraction vs decimal), variable roles (x vs y), and whether a graph/table is present.
-• If thinking seems fine but format mismatches, ask a format-alignment question: “Does Khan want decimal or fraction here?”
+• If thinking seems fine but format mismatches, ask a format-alignment question.
 
 GRADE GUIDE (tone & complexity)
-You will receive a grade number. Follow these ranges:
-• K–2 (K≈5y, 1≈7y, 2≈8y): ultra simple words, friendly tone, 1 idea per sentence, lots of concrete examples (share, groups, more/less). Avoid jargon.
-• 3–5 (9–11y): simple language; define terms in kid-friendly ways (“per means for each”); use pictures/real-life anchors.
-• 6–8 (12–14y): standard math words; ask for why/how; encourage showing a step or pointing to a place on the graph/table.
-• 9–12 (15–18y): precise terminology; focus on justification, structure, and checking assumptions.
-
-STYLE
-Friendly, respectful, curious; never condescending. Use at most 2 emojis from:
-🔎🧩✨💡✅🙌📘📐📊📝🎯🚀🧠📷🔧🌟🤔.
+• K–2: ultra simple words, friendly tone, 1 idea/sentence, concrete examples.
+• 3–5: simple language; define terms in kid-friendly ways.
+• 6–8: standard math words; ask for why/how.
+• 9–12: precise terminology; emphasize justification.
 """
 
 HARD_CONSTRAINT = (
     "Hard constraint: never give the final answer; never say ‘correct/incorrect’; "
     "name operations only inside questions/options; avoid repetition; "
-    "stay on the Focus Anchor; follow LEVEL length rules (Apprentice can be longer; "
-    "Rising Hero brief+question; Master one short question)."
+    "stay on the Focus Anchor; follow LEVEL length rules (Apprentice longer; Rising Hero brief+question; Master single short question)."
 )
 
 # ---------- HEALTH ----------
@@ -87,40 +76,81 @@ def home():
 <!doctype html>
 <meta charset="utf-8" />
 <title>🔒 MathMate Pro</title>
+
+<!-- MathJax for pretty fractions/equations -->
+<script>
+window.MathJax = {
+  tex: { inlineMath: [['$', '$'], ['\\\\(', '\\\\)']] },
+  svg: { fontCache: 'global' }
+};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+
 <style>
-  :root{--bg:#fff;--text:#0f172a;--muted:#64748b;--line:#e2e8f0;--me:#e6f0ff;--bot:#f8fafc}
+  :root{
+    --bg:#fff; --text:#0f172a; --muted:#64748b; --line:#e2e8f0; --me:#e6f0ff; --bot:#f8fafc;
+  }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial}
-  header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);padding:18px 16px;text-align:center}
-  header h1{margin:0;font-size:22px;letter-spacing:.2px}
-  main{display:flex;justify-content:center}
-  .wrap{width:100%;max-width:900px;padding:16px}
-  #chat{min-height:58vh;max-height:72vh;overflow:auto;padding:12px 4px}
-  .row{display:flex;margin:10px 0}
-  .bubble{max-width:72%;padding:12px 14px;border:1px solid var(--line);border-radius:16px;line-height:1.5;white-space:pre-wrap}
+  header{
+    position:sticky; top:0; background:var(--bg); border-bottom:1px solid var(--line);
+    padding:12px 16px; z-index:10;
+  }
+  .bar{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;}
+  h1{margin:0; font-size:22px; letter-spacing:.2px}
+  .controls-top{display:none; gap:8px; align-items:center; flex-wrap:wrap}
+  select, input{padding:10px 12px; border-radius:12px; border:1px solid var(--line); background:#fff; color:var(--text)}
+  button{padding:12px 16px; border-radius:12px; border:1px solid var(--line); background:#111827; color:#fff; cursor:pointer; min-width:84px}
+  button:disabled{opacity:.6; cursor:not-allowed}
+
+  main{display:flex; justify-content:center}
+  .wrap{width:100%; max-width:1200px; padding:16px} /* wider so the typing bar is longer */
+  #chat{min-height:56vh; max-height:68vh; overflow:auto; padding:12px 4px}
+  .row{display:flex; margin:10px 0}
+  .bubble{max-width:78%; padding:12px 14px; border:1px solid var(--line);
+          border-radius:16px; line-height:1.55; white-space:pre-wrap}
   .me{justify-content:flex-end}
   .me .bubble{background:var(--me)}
   .bot{justify-content:flex-start}
   .bot .bubble{background:var(--bot)}
-  .sys{color:var(--muted);text-align:center;font-style:italic}
-  #panel{position:sticky;bottom:0;background:var(--bg);padding:12px 0;border-top:1px solid var(--line)}
-  input,button,select{font:inherit}
-  #unlock{display:flex;gap:8px}
-  #password, textarea, select{padding:12px;border-radius:12px;border:1px solid var(--line);background:#fff;color:var(--text)}
-  button{padding:12px 16px;border-radius:12px;border:1px solid var(--line);background:#111827;color:#fff;cursor:pointer;min-width:84px}
-  button:disabled{opacity:.6;cursor:not-allowed}
-  #composer{display:none;gap:10px;align-items:flex-end;flex-wrap:wrap}
-  #left{flex:1;display:flex;flex-direction:column;gap:8px;min-width:300px}
-  textarea{flex:1;resize:vertical;min-height:110px;max-height:260px}
-  #drop{border:1px dashed var(--line);border-radius:12px;padding:10px;text-align:center;color:var(--muted)}
-  #thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
-  .thumb{width:80px;height:80px;border:1px solid var(--line);border-radius:8px;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden}
-  .thumb img{max-width:100%;max-height:100%}
+  .sys{color:var(--muted); text-align:center; font-style:italic}
+
+  #panel{position:sticky; bottom:0; background:var(--bg); padding:12px 0; border-top:1px solid var(--line)}
+  #unlock{display:flex; gap:8px}
+  #composer{display:none; gap:12px; align-items:flex-end; flex-wrap:nowrap} /* keep one long bar */
+  #left{flex:1; display:flex; flex-direction:column; gap:8px; min-width:300px}
+  textarea{flex:1; resize:vertical; min-height:130px; max-height:340px; width:100%;
+           padding:14px; border-radius:14px; border:1px solid var(--line); background:#fff; color:var(--text)}
+  #drop{border:1px dashed var(--line); border-radius:12px; padding:10px; text-align:center; color:var(--muted)}
+  #thumbs{display:flex; gap:8px; flex-wrap:wrap; margin-top:4px}
+  .thumb{width:80px; height:80px; border:1px solid var(--line); border-radius:8px; background:#fff; display:flex; align-items:center; justify-content:center; overflow:hidden}
+  .thumb img{max-width:100%; max-height:100%}
   small.hint{color:var(--muted)}
-  .row.controls{display:flex;gap:8px;align-items:center;margin-top:8px}
 </style>
 
-<header><h1>🔒 MathMate Pro</h1></header>
+<header>
+  <div class="bar">
+    <h1>🔒 MathMate Pro</h1>
+    <div id="controlsTop" class="controls-top">
+      <label>Grade:
+        <select id="grade">
+          <option value="K">K</option>
+          <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
+          <option selected>6</option><option>7</option><option>8</option><option>9</option><option>10</option>
+          <option>11</option><option>12</option>
+        </select>
+      </label>
+      <label>Level:
+        <select id="level">
+          <option selected>Apprentice</option>
+          <option>Rising Hero</option>
+          <option>Master</option>
+        </select>
+      </label>
+    </div>
+  </div>
+</header>
+
 <main><div class="wrap">
   <div id="chat"><div class="sys">Type the password to unlock.</div></div>
 
@@ -131,24 +161,6 @@ def home():
     </div>
 
     <div id="composer">
-      <div class="row controls">
-        <label>Grade:
-          <select id="grade">
-            <option value="K">K</option>
-            <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
-            <option selected>6</option><option>7</option><option>8</option><option>9</option><option>10</option>
-            <option>11</option><option>12</option>
-          </select>
-        </label>
-        <label>Level:
-          <select id="level">
-            <option selected>Apprentice</option>
-            <option>Rising Hero</option>
-            <option>Master</option>
-          </select>
-        </label>
-      </div>
-
       <div id="left">
         <textarea id="msg" placeholder="Send a screenshot or paste the problem. Say “new question” when you move on, or “new problem” to reset focus. (Shift+Enter = newline)"></textarea>
         <div id="drop">
@@ -167,6 +179,7 @@ def home():
 const chat = document.getElementById('chat');
 const unlock = document.getElementById('unlock');
 const composer = document.getElementById('composer');
+const controlsTop = document.getElementById('controlsTop');
 const msgBox = document.getElementById('msg');
 const pwdBox = document.getElementById('password');
 const unlockBtn = document.getElementById('unlockBtn');
@@ -184,6 +197,12 @@ let FOCUS = '';
 let lastBot = '';
 let queuedImages = [];
 
+function typeset(row){
+  if(window.MathJax && window.MathJax.typesetPromise){
+    window.MathJax.typesetPromise([row]).catch(()=>{});
+  }
+}
+
 function addBubble(who, text){
   if(who==='MathMate'){
     const a = (text||'').trim();
@@ -195,10 +214,12 @@ function addBubble(who, text){
   row.className = who === 'You' ? 'row me' : 'row bot';
   const b = document.createElement('div');
   b.className = 'bubble';
+  // allow MathJax TeX while escaping angle brackets
   b.innerHTML = (text||'').replace(/</g,'&lt;');
   row.appendChild(b);
   chat.appendChild(row);
   chat.scrollTop = chat.scrollHeight;
+  if(who==='MathMate') typeset(row);
 }
 
 function looksLikeProblem(text){
@@ -241,7 +262,11 @@ unlockBtn.onclick = async ()=>{
   const data = await post({ message: pw });
   addBubble('MathMate', data.reply ?? data.error ?? '(error)');
   if((data.reply||'').startsWith('🔓')){
-    AUTH = pw; unlock.style.display='none'; composer.style.display='flex'; msgBox.focus();
+    AUTH = pw;
+    unlock.style.display='none';
+    composer.style.display='flex';
+    controlsTop.style.display='flex'; // show grade/level at the top
+    msgBox.focus();
   }
 };
 
@@ -274,21 +299,18 @@ def chat():
     try:
         p = request.get_json(silent=True) or {}
 
-        # Safe types
         text    = str(p.get("message", "") or "").strip()
         images  = p.get("images") or []
-        level   = str(p.get("level", "") or "").strip()        # Apprentice | Rising Hero | Master
-        grade   = str(p.get("grade", "") or "").strip()        # K or 1..12
+        level   = str(p.get("level", "") or "").strip()
+        grade   = str(p.get("grade", "") or "").strip()
         current = str(p.get("current", "") or "").strip()
         focus   = str(p.get("focus", "") or "").strip()
 
-        # Unlock gate
         if request.headers.get("X-Auth", "") != PASSWORD:
             if text.lower() == PASSWORD.lower():
                 return jsonify(reply="🔓 Unlocked! Pick your grade & level, then send your problem or a photo. ✨"), 200
             return jsonify(reply="🔒 Please type the access password to begin."), 200
 
-        # Build user content (vision + text)
         user_content = []
         if text:
             user_content.append({"type": "text", "text": text})
@@ -297,47 +319,41 @@ def chat():
         if not user_content:
             user_content = [{"type": "text", "text": "Please analyze the attached image problem."}]
 
-        # Dynamic system lines
-        level_line = ""
         lv = (level or "").lower()
+        level_line = ""
         if lv == "apprentice":
-            level_line = "LEVEL=Apprentice. You may explain proactively (2–6 short sentences allowed) and must include a guiding question or options."
+            level_line = "LEVEL=Apprentice. You may explain proactively (2–6 short sentences) and must include a guiding question or options."
         elif lv == "rising hero":
             level_line = "LEVEL=Rising Hero. Brief coaching allowed (≤2 short sentences) plus one guiding question or options. Total 1–3 sentences."
         elif lv == "master":
             level_line = "LEVEL=Master. No explanations unless asked. One concise guiding question only."
 
         grade_line = (
-            f"GRADE={grade or 'unknown'} for tone. "
-            "Use Grade Guide ranges. If grade in {K,1,2}, use ultra-simple words and concrete examples; "
-            "if grade in {3,4,5}, simple language + kid-friendly definitions; "
-            "if grade in {6,7,8}, standard math terms and ask for reasoning; "
-            "if grade in {9,10,11,12}, precise terms and expect justification."
+            f"GRADE={grade or 'unknown'} for tone. Use Grade Guide ranges; simplify language for younger grades and increase rigor for older grades."
         )
-
         focus_line = (
             f"Focus Anchor: {focus or '(infer from latest learner content)'} "
             "Stay on this focus; do not switch topics unless the learner clearly starts a new problem or says 'new question/new problem'."
         )
 
-        messages = []
-        def add(role, content):
+        def add(msgs, role, content):
             if str(content or "").strip():
-                messages.append({"role": role, "content": content})
+                msgs.append({"role": role, "content": content})
 
-        add("system", MATHMATE_PROMPT)
-        add("system", grade_line)
-        add("system", level_line)
-        add("system", focus_line)
-        add("system", HARD_CONSTRAINT)
+        messages = []
+        add(messages, "system", MATHMATE_PROMPT)
+        add(messages, "system", grade_line)
+        add(messages, "system", level_line)
+        add(messages, "system", focus_line)
+        add(messages, "system", HARD_CONSTRAINT)
         messages.append({"role": "user", "content": user_content})
 
         completion = client.chat.completions.create(
             model=MODEL,
             temperature=0.2,
-            frequency_penalty=0.5,   # discourage exact repeats
+            frequency_penalty=0.5,
             presence_penalty=0.2,
-            max_tokens=160,          # apprentice may need a bit more room
+            max_tokens=160,
             messages=messages,
         )
         return jsonify(reply=completion.choices[0].message.content)
