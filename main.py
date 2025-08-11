@@ -19,7 +19,7 @@ DEBUG    = os.getenv("DEBUG", "0") == "1"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ---------- PROMPT (grounded; no fabricated digits) ----------
+# ---------- PROMPT (grounded; confirm-first for vision) ----------
 MATHMATE_PROMPT = r"""
 🎯 MATHMATE — Teach-While-Questioning (Acton + Khan), vision-capable.
 
@@ -35,16 +35,16 @@ GLOBAL RULES
 
 VISION-GROUNDED READING (before you coach)
 1) Silently read the prompt/image and extract:
-   • the target constant (e.g., $k=0.9$) and the orientation (between y and x → $\\frac{y}{x}$),
-   • the exact (x, y) pairs for the table you’re discussing.
-2) If any pair is uncertain, ASK to confirm that pair BEFORE using it.
+   • the target constant (e.g., $k=0.9$) and the orientation (between y and x → $\\frac{y}{x}$ only — never swap),
+   • the exact (x, y) pairs for the tables/options you discuss.
+2) **FIRST**: Restate the pairs you can read and ask for confirmation. If any value is uncertain, show a “?” and ask them to type it. Do not proceed to math until they confirm.
 
 PRIVATE CHECK (silent)
-• Privately compute with the extracted pairs only. Never print the private numbers or results.
+• Privately compute with the confirmed pairs only. Never print the private numbers or results.
 • Use this to pick your path:
   GREEN: Looks consistent → gentle nudge to submit (“Ready to lock that in?”) or offer one quick verification choice.
   YELLOW: Missing/uncertain → ask for a tiny confirm (which row, which order, format).
-  RED: Not consistent → block submission and point to the exact place to re-check (e.g., “row 3 ratio order”), without numbers.
+  RED: Not consistent → block submission and point to the exact place to re-check (e.g., “row 2 ratio order”), without numbers.
 
 LEVEL BEHAVIOR
 • 🐣 Apprentice — Short step-by-step teaching (2–7 short sentences). State the method, then ask for one tiny action.
@@ -71,7 +71,7 @@ Friendly, curious, never condescending. ≤2 emojis from: 🔎🧩✨💡✅🙌
 """
 
 HARD_CONSTRAINT = (
-    "Hard constraint: do not fabricate or transform digits; if any number is uncertain, ask to confirm; "
+    "Hard constraint: do not fabricate or transform digits; if any number is uncertain, ask to confirm and WAIT for confirmation; "
     "silently compute to guide coaching but never print private calculations or the final numeric result; "
     "avoid repetition and generic resets; stay on the Focus Anchor; follow LEVEL length rules "
     "(Apprentice step-by-step; Rising Hero brief+question; Master single short question)."
@@ -82,7 +82,7 @@ HARD_CONSTRAINT = (
 def health():
     return "ok", 200
 
-# ---------- UI (merged input card; same look) ----------
+# ---------- UI (same merged input card) ----------
 @app.get("/")
 def home():
     return """
@@ -295,12 +295,12 @@ def chat():
         p = request.get_json(silent=True) or {}
 
         text     = str(p.get("message", "") or "").strip()
-        images   = (p.get("images") or [])[:4]  # cap images sent to model
+        images   = (p.get("images") or [])[:4]
         level    = str(p.get("level", "") or "").strip()
         grade    = str(p.get("grade", "") or "").strip()
         current  = str(p.get("current", "") or "").strip()
         focus    = str(p.get("focus", "") or "").strip()
-        history  = p.get("history") or []  # [{role:'user'|'assistant', content:'...'}]
+        history  = p.get("history") or []
 
         # --- SAFE UNLOCK ---
         if request.headers.get("X-Auth", "") != PASSWORD:
@@ -334,6 +334,16 @@ def chat():
             "Stay on this focus; do not switch topics unless the learner clearly starts a new problem or says 'new question/new problem'."
         )
 
+        # Vision guard: MUST confirm read pairs first when images are present
+        vision_guard = ""
+        if images:
+            vision_guard = (
+                "VISION GUARD: An image is present. Your FIRST reply must ONLY restate the (x,y) pairs you can read "
+                "for any table/option you will discuss, in this exact compact format, without calculations: "
+                "\"Read pairs → A: (x1,y1); (x2,y2); (x3,y3) | B: ... | C: ... . Confirm Y/N?\" "
+                "If any value is uncertain, use '?' and ask the learner to type it. Do not proceed to math until the learner confirms."
+            )
+
         def add(msgs, role, content):
             if str(content or "").strip():
                 msgs.append({"role": role, "content": content})
@@ -343,6 +353,7 @@ def chat():
         add(messages, "system", grade_line)
         add(messages, "system", level_line)
         add(messages, "system", focus_line)
+        add(messages, "system", vision_guard)
         add(messages, "system", HARD_CONSTRAINT)
 
         # short rolling history (text-only)
@@ -365,7 +376,7 @@ def chat():
 
         completion = client.chat.completions.create(
             model=MODEL,
-            temperature=0.0,   # lower randomness to avoid invented fractions
+            temperature=0.0,   # reduce randomness—no invented numbers
             frequency_penalty=0.5,
             presence_penalty=0.2,
             max_tokens=max_out,
