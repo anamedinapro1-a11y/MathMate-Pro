@@ -89,6 +89,7 @@ window.MathJax = {
 <style>
   :root{
     --bg:#fff; --text:#0f172a; --muted:#64748b; --line:#e2e8f0; --me:#e6f0ff; --bot:#f8fafc;
+    --accent:#111827;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial}
@@ -100,12 +101,12 @@ window.MathJax = {
   h1{margin:0; font-size:22px; letter-spacing:.2px}
   .controls-top{display:none; gap:8px; align-items:center; flex-wrap:wrap}
   select, input{padding:10px 12px; border-radius:12px; border:1px solid var(--line); background:#fff; color:var(--text)}
-  button{padding:12px 16px; border-radius:12px; border:1px solid var(--line); background:#111827; color:#fff; cursor:pointer; min-width:84px}
+  button{padding:12px 16px; border-radius:12px; border:1px solid var(--line); background:var(--accent); color:#fff; cursor:pointer; min-width:84px}
   button:disabled{opacity:.6; cursor:not-allowed}
 
   main{display:flex; justify-content:center}
-  .wrap{width:100%; max-width:1200px; padding:16px} /* wider so the typing bar is longer */
-  #chat{min-height:56vh; max-height:68vh; overflow:auto; padding:12px 4px}
+  .wrap{width:100%; max-width:1400px; padding:16px} /* wider typing bar */
+  #chat{min-height:52vh; max-height:64vh; overflow:auto; padding:12px 4px}
   .row{display:flex; margin:10px 0}
   .bubble{max-width:78%; padding:12px 14px; border:1px solid var(--line);
           border-radius:16px; line-height:1.55; white-space:pre-wrap}
@@ -115,17 +116,36 @@ window.MathJax = {
   .bot .bubble{background:var(--bot)}
   .sys{color:var(--muted); text-align:center; font-style:italic}
 
-  #panel{position:sticky; bottom:0; background:var(--bg); padding:12px 0; border-top:1px solid var(--line)}
-  #unlock{display:flex; gap:8px}
-  #composer{display:none; gap:12px; align-items:flex-end; flex-wrap:nowrap} /* keep one long bar */
-  #left{flex:1; display:flex; flex-direction:column; gap:8px; min-width:300px}
-  textarea{flex:1; resize:vertical; min-height:130px; max-height:340px; width:100%;
-           padding:14px; border-radius:14px; border:1px solid var(--line); background:#fff; color:var(--text)}
-  #drop{border:1px dashed var(--line); border-radius:12px; padding:10px; text-align:center; color:var(--muted)}
-  #thumbs{display:flex; gap:8px; flex-wrap:wrap; margin-top:4px}
-  .thumb{width:80px; height:80px; border:1px solid var(--line); border-radius:8px; background:#fff; display:flex; align-items:center; justify-content:center; overflow:hidden}
+  #panel{position:sticky; bottom:0; background:var(--bg); padding:14px 0; border-top:1px solid var(--line)}
+
+  /* merged input card */
+  #composer{display:none; align-items:stretch; gap:12px}
+  .inputCard{
+    flex:1; border:1px solid var(--line); border-radius:16px; background:#fff; display:flex; flex-direction:column; overflow:hidden;
+    transition: box-shadow .2s, border-color .2s;
+  }
+  .inputCard.drag{border-color:#60a5fa; box-shadow:0 0 0 3px rgba(96,165,250,.25)}
+  .inputArea{
+    position:relative; padding:10px;
+  }
+  textarea{
+    width:100%; min-height:150px; max-height:360px; resize:vertical;
+    padding:14px; border-radius:12px; border:1px solid var(--line); outline:none;
+    background:#fff; color:var(--text);
+  }
+
+  .inputFooter{
+    border-top:1px dashed var(--line); padding:10px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  }
+  .addBtn{
+    display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border:1px dashed var(--line);
+    border-radius:12px; color:var(--muted); background:#fff; cursor:pointer;
+  }
+  .thumbs{display:flex; gap:8px; flex-wrap:wrap}
+  .thumb{width:72px; height:72px; border:1px solid var(--line); border-radius:8px; background:#fff; display:flex; align-items:center; justify-content:center; overflow:hidden}
   .thumb img{max-width:100%; max-height:100%}
-  small.hint{color:var(--muted)}
+
+  .sendCol{display:flex; align-items:flex-end}
 </style>
 
 <header>
@@ -155,22 +175,25 @@ window.MathJax = {
   <div id="chat"><div class="sys">Type the password to unlock.</div></div>
 
   <div id="panel">
-    <div id="unlock">
-      <input id="password" placeholder="Type password…" />
+    <div id="unlock" style="display:flex;gap:8px">
+      <input id="password" placeholder="Type the password to unlock." style="flex:1" />
       <button id="unlockBtn">Unlock</button>
     </div>
 
     <div id="composer">
-      <div id="left">
-        <textarea id="msg" placeholder="Send a screenshot or paste the problem. Say “new question” when you move on, or “new problem” to reset focus. (Shift+Enter = newline)"></textarea>
-        <div id="drop">
-          <label for="fileBtn">➕ Add images (PNG/JPG) — drag & drop or click</label>
-          <input id="fileBtn" type="file" accept="image/*" multiple />
-          <div id="thumbs"></div>
-          <small class="hint">Images are analyzed with your prompt (vision).</small>
+      <div class="inputCard" id="inputCard">
+        <div class="inputArea">
+          <textarea id="msg" placeholder="Send a screenshot or paste the problem. You can also drag & drop or paste images here. (Shift+Enter = newline)"></textarea>
+          <input id="fileBtn" type="file" accept="image/*" multiple style="display:none" />
+        </div>
+        <div class="inputFooter">
+          <button id="addBtn" class="addBtn" type="button">➕ Add images</button>
+          <div id="thumbs" class="thumbs"></div>
         </div>
       </div>
-      <button id="sendBtn">Send</button>
+      <div class="sendCol">
+        <button id="sendBtn">Send</button>
+      </div>
     </div>
   </div>
 </div></main>
@@ -180,11 +203,13 @@ const chat = document.getElementById('chat');
 const unlock = document.getElementById('unlock');
 const composer = document.getElementById('composer');
 const controlsTop = document.getElementById('controlsTop');
+const inputCard = document.getElementById('inputCard');
 const msgBox = document.getElementById('msg');
 const pwdBox = document.getElementById('password');
 const unlockBtn = document.getElementById('unlockBtn');
 const sendBtn = document.getElementById('sendBtn');
 const fileBtn = document.getElementById('fileBtn');
+const addBtn = document.getElementById('addBtn');
 const thumbs = document.getElementById('thumbs');
 const levelSel = document.getElementById('level');
 const gradeSel = document.getElementById('grade');
@@ -214,7 +239,6 @@ function addBubble(who, text){
   row.className = who === 'You' ? 'row me' : 'row bot';
   const b = document.createElement('div');
   b.className = 'bubble';
-  // allow MathJax TeX while escaping angle brackets
   b.innerHTML = (text||'').replace(/</g,'&lt;');
   row.appendChild(b);
   chat.appendChild(row);
@@ -248,13 +272,35 @@ function addThumb(src){
   const d = document.createElement('div'); d.className = 'thumb';
   const img = document.createElement('img'); img.src = src; d.appendChild(img); thumbs.appendChild(d);
 }
-function fileToDataURL(file){
-  return new Promise((res, rej)=>{ const fr = new FileReader(); fr.onload=()=>res(fr.result); fr.onerror=rej; fr.readAsDataURL(file); });
+async function filesToDataURLs(files){
+  for(const f of files){
+    if(!f.type.startsWith('image/')) continue;
+    const fr = new FileReader();
+    const p = new Promise((res, rej)=>{ fr.onload=()=>res(fr.result); fr.onerror=rej; });
+    fr.readAsDataURL(f);
+    const url = await p;
+    queuedImages.push(url);
+    addThumb(url);
+  }
 }
-fileBtn.onchange = async (e)=>{
-  for(const f of e.target.files){ const url = await fileToDataURL(f); queuedImages.push(url); addThumb(url); }
-  fileBtn.value = '';
-};
+
+/* open file picker */
+addBtn.onclick = ()=> fileBtn.click();
+fileBtn.onchange = async (e)=>{ await filesToDataURLs(e.target.files); fileBtn.value=''; };
+
+/* drag & drop on the whole card */
+['dragenter','dragover'].forEach(ev=> inputCard.addEventListener(ev,(e)=>{ e.preventDefault(); inputCard.classList.add('drag'); }));
+['dragleave','dragend','drop'].forEach(ev=> inputCard.addEventListener(ev,(e)=>{ e.preventDefault(); inputCard.classList.remove('drag'); }));
+inputCard.addEventListener('drop', async (e)=>{ await filesToDataURLs(e.dataTransfer.files); });
+
+/* paste images into the textarea */
+msgBox.addEventListener('paste', async (e)=>{
+  const items = e.clipboardData && e.clipboardData.items;
+  if(!items) return;
+  const files = [];
+  for(const it of items){ if(it.type && it.type.startsWith('image/')) files.push(it.getAsFile()); }
+  if(files.length){ e.preventDefault(); await filesToDataURLs(files); }
+});
 
 unlockBtn.onclick = async ()=>{
   const pw = (pwdBox.value||'').trim(); if(!pw) return;
@@ -265,7 +311,7 @@ unlockBtn.onclick = async ()=>{
     AUTH = pw;
     unlock.style.display='none';
     composer.style.display='flex';
-    controlsTop.style.display='flex'; // show grade/level at the top
+    controlsTop.style.display='flex';
     msgBox.focus();
   }
 };
@@ -292,6 +338,7 @@ msgBox.addEventListener('keydown', (e)=>{ if(e.key==='Enter' && !e.shiftKey){ e.
 pwdBox.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); unlockBtn.click(); }});
 </script>
 """
+
 
 # ---------- CHAT (vision + meta + anchor) ----------
 @app.post("/chat")
