@@ -1,4 +1,4 @@
-import os, re
+import os, re, math
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -17,9 +17,19 @@ MODEL    = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # vision-capable
 PASSWORD = os.getenv("MATHMATE_PASSWORD", "unlock-mathmate")
 DEBUG    = os.getenv("DEBUG", "0") == "1"
 
+# Pricing (USD per 1M tokens) — adjust if your plan differs
+PRICE_INPUT_PER_1M        = float(os.getenv("PRICE_INPUT_PER_1M", "0.60"))
+PRICE_CACHED_INPUT_PER_1M = float(os.getenv("PRICE_CACHED_INPUT_PER_1M", "0.30"))
+PRICE_OUTPUT_PER_1M       = float(os.getenv("PRICE_OUTPUT_PER_1M", "2.40"))
+
+# Derived per-token rates
+RATE_INPUT        = PRICE_INPUT_PER_1M / 1_000_000.0
+RATE_CACHED_INPUT = PRICE_CACHED_INPUT_PER_1M / 1_000_000.0
+RATE_OUTPUT       = PRICE_OUTPUT_PER_1M / 1_000_000.0
+
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ---------- PROMPT (grounded; confirm-first for vision) ----------
+# ---------- PROMPT (grounded; confirm-first for vision; unchanged logic) ----------
 MATHMATE_PROMPT = r"""
 🎯 MATHMATE — Teach-While-Questioning (Acton + Khan), vision-capable.
 
@@ -37,7 +47,7 @@ VISION-GROUNDED READING (before you coach)
 1) Silently read the prompt/image and extract:
    • the target constant (e.g., $k=0.9$) and the orientation (between y and x → $\\frac{y}{x}$ only — never swap),
    • the exact (x, y) pairs for the tables/options you discuss.
-2) **FIRST**: Restate the pairs you can read and ask for confirmation. If any value is uncertain, show a “?” and ask them to type it. Do not proceed to math until they confirm.
+2) FIRST: Restate the pairs you can read and ask for confirmation. If any value is uncertain, show a “?” and ask them to type it. Do not proceed to math until they confirm.
 
 PRIVATE CHECK (silent)
 • Privately compute with the confirmed pairs only. Never print the private numbers or results.
@@ -82,7 +92,7 @@ HARD_CONSTRAINT = (
 def health():
     return "ok", 200
 
-# ---------- UI (same merged input card) ----------
+# ---------- UI (same, with added image auto-shrink + cost badge) ----------
 @app.get("/")
 def home():
     return """
@@ -136,9 +146,19 @@ window.MathJax = { tex: { inlineMath: [['$', '$'], ['\\\\(', '\\\\)']] }, svg: {
   .thumb{width:72px;height:72px;border:1px solid var(--line);border-radius:8px;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden}
   .thumb img{max-width:100%;max-height:100%}
   .sendCol{display:flex;align-items:flex-end}
+
+  /* cost badge */
+  #costBar{display:none;justify-content:center;gap:10px;margin-top:8px;color:var(--muted);font-size:13px}
+  #costBar span{background:#f3f4f6;border:1px solid var(--line);padding:4px 8px;border-radius:10px}
 </style>
 
-<header><h1>🔒 MathMate Pro</h1></header>
+<header>
+  <h1>🔒 MathMate Pro</h1>
+  <div id="costBar">
+    <span id="turnCost">$0.0000</span>
+    <span id="dayCost">$0.0000 today</span>
+  </div>
+</header>
 
 <main><div class="wrap">
   <div id="chat"><div class="sys">Type the password to unlock.</div></div>
@@ -188,6 +208,104 @@ window.MathJax = { tex: { inlineMath: [['$', '$'], ['\\\\(', '\\\\)']] }, svg: {
 </div></main>
 
 <script>
+// ===================== COST + IMAGE SHRINK HELPERS =====================
+const IMG_MAX_SIDE = 1280;
+const IMG_JPEG_QUALITY = 0.82;
+const HARD_LIMIT_KB = 450;   // if still bigger after shrinking, we warn (and block if strict mode on)
+const STRICT_BLOCK = true;   // set to false to allow even if > HARD_LIMIT_KB (we still warn)
+const ONE_IMAGE_PER_TURN = true;
+
+// Rates (USD per 1M tokens) — should match server .env (shown to user for transparency)
+const PRICE_INPUT_PER_1M = parseFloat("""" + (""" + ") + """); // dummy replaced below
+</script>
+<script>
+// We inject server rates dynamically via data attributes for consistency
+</script>
+<script>
+// cost UI refs
+const costBar = document.getElementById('costBar');
+const turnCostEl = document.getElementById('turnCost');
+const dayCostEl = document.getElementById('dayCost');
+let dayCost = 0;
+
+function setRates(serverRates){
+  window.RATE_INPUT_PER_TOKEN        = serverRates.rate_input;
+  window.RATE_CACHED_INPUT_PER_TOKEN = serverRates.rate_cached_input;
+  window.RATE_OUTPUT_PER_TOKEN       = serverRates.rate_output;
+}
+function fmtUSD(x){ return '$' + (Math.round(x*10000)/10000).toFixed(4); }
+
+// image tools
+async function fileToResizedDataURL(file) {
+  let bmp = null;
+  try { bmp = await createImageBitmap(file, { imageOrientation:'from-image' }); } catch(_){}
+  if (bmp){
+    const w=bmp.width, h=bmp.height;
+    const scale = Math.min(1, IMG_MAX_SIDE / Math.max(w,h));
+    const cw = Math.max(1, Math.round(w*scale));
+    const ch = Math.max(1, Math.round(h*scale));
+    const c = document.createElement('canvas'); c.width=cw; c.height=ch;
+    const ctx = c.getContext('2d'); ctx.drawImage(bmp, 0,0,cw,ch); bmp.close?.();
+    return c.toDataURL('image/jpeg', IMG_JPEG_QUALITY);
+  }
+  // fallback
+  const url = URL.createObjectURL(file);
+  const img = await new Promise((res,rej)=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=rej; im.src=url; });
+  const w=img.naturalWidth, h=img.naturalHeight;
+  const scale = Math.min(1, IMG_MAX_SIDE / Math.max(w,h));
+  const cw = Math.max(1, Math.round(w*scale));
+  const ch = Math.max(1, Math.round(h*scale));
+  const c=document.createElement('canvas'); c.width=cw; c.height=ch;
+  const ctx=c.getContext('2d'); ctx.drawImage(img,0,0,cw,ch);
+  URL.revokeObjectURL(url);
+  return c.toDataURL('image/jpeg', IMG_JPEG_QUALITY);
+}
+function approxKBFromDataURL(dataURL){
+  const b64=(dataURL.split(',')[1]||'');
+  const bytes=Math.floor((b64.length*3)/4);
+  return Math.round(bytes/102.4)/10;
+}
+async function shrinkAndMaybeBlock(file){
+  const originalKB = Math.round((file.size/1024)*10)/10;
+  const resized = await fileToResizedDataURL(file);
+  let kb = approxKBFromDataURL(resized);
+  let final = resized;
+
+  // extra pass if still very big
+  if (kb > HARD_LIMIT_KB){
+    // try harder: reduce a bit more
+    const img = await new Promise((res,rej)=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=rej; im.src=resized; });
+    const side = Math.round(IMG_MAX_SIDE*0.85);
+    const scale = Math.min(1, side/Math.max(img.naturalWidth,img.naturalHeight));
+    const cw=Math.max(1,Math.round(img.naturalWidth*scale));
+    const ch=Math.max(1,Math.round(img.naturalHeight*scale));
+    const c=document.createElement('canvas'); c.width=cw; c.height=ch;
+    const ctx=c.getContext('2d'); ctx.drawImage(img,0,0,cw,ch);
+    final = c.toDataURL('image/jpeg', Math.max(0.72, IMG_JPEG_QUALITY-0.1));
+    kb = approxKBFromDataURL(final);
+  }
+
+  return { dataURL: final, originalKB, kb };
+}
+function showToast(msg){
+  const t=document.createElement('div');
+  t.textContent=msg;
+  Object.assign(t.style,{
+    position:'fixed', left:'50%', bottom:'16px', transform:'translateX(-50%)',
+    background:'#111827', color:'#fff', padding:'10px 14px', borderRadius:'10px',
+    boxShadow:'0 6px 20px rgba(0,0,0,.2)', fontSize:'13px', zIndex:9999
+  });
+  document.body.appendChild(t); setTimeout(()=>t.remove(), 2000);
+}
+</script>
+
+<style>
+/* tiny tag inside thumb for size */
+.thumb .sizeTag{position:absolute;right:4px;bottom:4px;background:rgba(0,0,0,.55);color:#fff;font-size:11px;padding:2px 4px;border-radius:6px}
+.thumb{position:relative}
+</style>
+
+<script>
 const chat = document.getElementById('chat');
 const unlock = document.getElementById('unlock');
 const composer = document.getElementById('composer');
@@ -201,9 +319,13 @@ const addBtn = document.getElementById('addBtn');
 const thumbs = document.getElementById('thumbs');
 const levelSel = document.getElementById('level');
 const gradeSel = document.getElementById('grade');
+const turnCostEl = document.getElementById('turnCost');
+const dayCostEl = document.getElementById('dayCost');
+const costBar = document.getElementById('costBar');
 
 let AUTH=''; let LEVEL=levelSel.value; let GRADE=gradeSel.value; let CURRENT=1; let FOCUS=''; let lastBot=''; let queuedImages=[];
 let HIST=[]; // rolling short history (text only)
+let DAY_TOTAL_COST = 0;
 
 function typeset(row){ if(window.MathJax?.typesetPromise){ window.MathJax.typesetPromise([row]).catch(()=>{}); } }
 
@@ -239,15 +361,17 @@ async function post(payload){
   return r.json();
 }
 
-function addThumb(src){ const d=document.createElement('div'); d.className='thumb'; const img=document.createElement('img'); img.src=src; d.appendChild(img); thumbs.appendChild(d); }
-async function filesToDataURLs(files){
-  for(const f of files){ if(!f.type.startsWith('image/')) continue;
-    const fr=new FileReader(); const p=new Promise((res,rej)=>{fr.onload=()=>res(fr.result);fr.onerror=rej;}); fr.readAsDataURL(f);
-    const url=await p; queuedImages.push(url); addThumb(url);
+function addThumb(src, labelText){
+  const d=document.createElement('div'); d.className='thumb';
+  const img=document.createElement('img'); img.src=src; d.appendChild(img);
+  if(labelText){
+    const tag=document.createElement('div'); tag.className='sizeTag'; tag.textContent=labelText; d.appendChild(tag);
   }
+  thumbs.appendChild(d);
 }
 
 addBtn.onclick=()=>fileBtn.click();
+
 fileBtn.onchange=async (e)=>{ await filesToDataURLs(e.target.files); fileBtn.value=''; };
 
 ['dragenter','dragover'].forEach(ev=> inputCard.addEventListener(ev,(e)=>{ e.preventDefault(); inputCard.classList.add('drag'); }));
@@ -260,12 +384,36 @@ msgBox.addEventListener('paste', async (e)=>{
   if(files.length){ e.preventDefault(); await filesToDataURLs(files); }
 });
 
+async function filesToDataURLs(files){
+  for(const f of files){
+    if(!f?.type?.startsWith('image/')) continue;
+    if (ONE_IMAGE_PER_TURN && queuedImages.length>=1){ showToast('One image per turn, please.'); break; }
+    try{
+      const {dataURL, originalKB, kb} = await shrinkAndMaybeBlock(f);
+      if (kb>HARD_LIMIT_KB && STRICT_BLOCK){
+        showToast('Please crop tighter around the problem and try again.');
+        continue; // block very large after shrinking
+      }
+      queuedImages.push(dataURL);
+      addThumb(dataURL, `${originalKB}→${kb} KB`);
+    }catch(err){
+      console.warn('resize failed, sending original', err);
+      const fr=new FileReader(); const p=new Promise((res,rej)=>{fr.onload=()=>res(fr.result);fr.onerror=rej;}); fr.readAsDataURL(f);
+      const url=await p; queuedImages.push(url); addThumb(url);
+    }
+  }
+}
+
 unlockBtn.onclick=async ()=>{
   const pw=(pwdBox.value||'').trim(); if(!pw) return;
   addBubble('You','••••••••');
   const data=await post({message:pw});
   addBubble('MathMate', data.reply ?? data.error ?? '(error)');
-  if((data.reply||'').startsWith('🔓')){ AUTH=pw; unlock.style.display='none'; composer.style.display='flex'; msgBox.focus(); }
+  if((data.reply||'').startsWith('🔓')){
+    AUTH=pw; unlock.style.display='none'; composer.style.display='flex'; msgBox.focus();
+    // set rates from server for cost calc
+    if (data.rates){ setRates(data.rates); costBar.style.display='flex'; }
+  }
 };
 
 levelSel.onchange=()=>{ LEVEL=levelSel.value; };
@@ -278,6 +426,14 @@ sendBtn.onclick=async ()=>{
   try{
     const data=await post({message:text,images:queuedImages});
     addBubble('MathMate',(data.reply ?? data.error ?? '(error)'));
+    // cost badge
+    if (data.usage && data.cost){
+      const c = data.cost.upper_bound_usd; // show upper bound (safe)
+      DAY_TOTAL_COST += c;
+      turnCostEl.textContent = fmtUSD(c);
+      dayCostEl.textContent  = fmtUSD(DAY_TOTAL_COST) + ' today';
+      costBar.style.display='flex';
+    }
   }finally{
     sendBtn.disabled=false; queuedImages=[]; thumbs.innerHTML=''; msgBox.focus();
   }
@@ -295,18 +451,35 @@ def chat():
         p = request.get_json(silent=True) or {}
 
         text     = str(p.get("message", "") or "").strip()
-        images   = (p.get("images") or [])[:4]
+        images   = (p.get("images") or [])[:1]  # one image per turn to cap costs
         level    = str(p.get("level", "") or "").strip()
         grade    = str(p.get("grade", "") or "").strip()
         current  = str(p.get("current", "") or "").strip()
         focus    = str(p.get("focus", "") or "").strip()
-        history  = p.get("history") or []
+        history  = p.get("history") or []  # [{role:'user'|'assistant', content:'...'}]
 
         # --- SAFE UNLOCK ---
         if request.headers.get("X-Auth", "") != PASSWORD:
             if text.lower() == PASSWORD.lower():
-                return jsonify(reply="🔓 Unlocked! Pick your grade & level, then send your problem or a photo. ✨"), 200
+                return jsonify(
+                    reply="🔓 Unlocked! Pick your grade & level, then send your problem or a photo. ✨",
+                    rates={
+                        "rate_input": RATE_INPUT,
+                        "rate_cached_input": RATE_CACHED_INPUT,
+                        "rate_output": RATE_OUTPUT,
+                    },
+                ), 200
             return jsonify(reply="🔒 Please type the access password to begin."), 200
+
+        # Server-side guard: reject truly huge base64 (belt & suspenders)
+        def approx_kb(data_url: str) -> int:
+            try:
+                b64 = (data_url.split(",", 1)[1] or "")
+                return int(len(b64) * 3 / 4 / 1024)
+            except Exception:
+                return 0
+        if any(approx_kb(u) > 800 for u in (p.get("images") or [])):
+            return jsonify(reply="That picture is still pretty big. Could you crop to just the problem and resend? 📷✂️"), 200
 
         # Build user content (vision + text)
         user_content = []
@@ -334,13 +507,13 @@ def chat():
             "Stay on this focus; do not switch topics unless the learner clearly starts a new problem or says 'new question/new problem'."
         )
 
-        # Vision guard: MUST confirm read pairs first when images are present
+        # Vision guard: confirm pairs first when images are present
         vision_guard = ""
         if images:
             vision_guard = (
                 "VISION GUARD: An image is present. Your FIRST reply must ONLY restate the (x,y) pairs you can read "
-                "for any table/option you will discuss, in this exact compact format, without calculations: "
-                "\"Read pairs → A: (x1,y1); (x2,y2); (x3,y3) | B: ... | C: ... . Confirm Y/N?\" "
+                "for any table/option you will discuss, in this compact format, without calculations: "
+                "\"Read pairs → A: (x1,y1); (x2,y2) | B: ... | C: ... . Confirm Y/N?\" "
                 "If any value is uncertain, use '?' and ask the learner to type it. Do not proceed to math until the learner confirms."
             )
 
@@ -349,12 +522,12 @@ def chat():
                 msgs.append({"role": role, "content": content})
 
         messages = []
-        add(messages, "system", MATHMATE_PROMPT)
-        add(messages, "system", grade_line)
-        add(messages, "system", level_line)
-        add(messages, "system", focus_line)
-        add(messages, "system", vision_guard)
-        add(messages, "system", HARD_CONSTRAINT)
+        add(messages, "system", MATHMATE_PROMPT)   # static → prompt-cached
+        add(messages, "system", grade_line)        # small dynamic
+        add(messages, "system", level_line)        # small dynamic
+        add(messages, "system", focus_line)        # small dynamic
+        add(messages, "system", vision_guard)      # small dynamic when images
+        add(messages, "system", HARD_CONSTRAINT)   # static-ish
 
         # short rolling history (text-only)
         for h in history[-6:]:
@@ -367,12 +540,9 @@ def chat():
         messages.append({"role": "user", "content": user_content})
 
         # --- size the reply by level so it doesn't cut off mid-list ---
-        if lv == "apprentice":
-            max_out = 260
-        elif lv == "rising hero":
-            max_out = 180
-        else:
-            max_out = 120  # master/default
+        if lv == "apprentice":   max_out = 240  # (kept lean to lower output cost)
+        elif lv == "rising hero":max_out = 160
+        else:                    max_out = 120  # master/default
 
         completion = client.chat.completions.create(
             model=MODEL,
@@ -382,7 +552,34 @@ def chat():
             max_tokens=max_out,
             messages=messages,
         )
-        return jsonify(reply=completion.choices[0].message.content)
+
+        # Cost estimate (upper bound; we can't know exact cached breakdown here)
+        usage = getattr(completion, "usage", None)
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        total_tokens = int(getattr(usage, "total_tokens", prompt_tokens + completion_tokens) or 0)
+
+        # Upper-bound cost (assume all prompt tokens at full input rate)
+        cost_upper = (prompt_tokens * RATE_INPUT) + (completion_tokens * RATE_OUTPUT)
+
+        # With-cache assumption: assume 600 of prompt tokens are the static prompt & cached after first call of the session.
+        # We don't track sessions server-side, so return an optimistic scenario too.
+        assumed_cached = min(600, prompt_tokens)  # tune if your prompt is longer/shorter
+        cost_with_cache = ((prompt_tokens - assumed_cached) * RATE_INPUT) + (assumed_cached * RATE_CACHED_INPUT) + (completion_tokens * RATE_OUTPUT)
+
+        return jsonify(
+            reply=completion.choices[0].message.content,
+            usage={"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens, "total_tokens": total_tokens},
+            cost={
+                "upper_bound_usd": cost_upper,
+                "with_cache_assumed_usd": cost_with_cache,
+            },
+            rates={
+                "rate_input": RATE_INPUT,
+                "rate_cached_input": RATE_CACHED_INPUT,
+                "rate_output": RATE_OUTPUT,
+            }
+        )
 
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
