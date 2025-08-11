@@ -19,49 +19,60 @@ DEBUG    = os.getenv("DEBUG", "0") == "1"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ---------- PROMPT (unchanged logic from last version) ----------
-MATHMATE_PROMPT = """
-🎯 MATHMATE — Socratic, Acton + Khan style, vision-capable.
+# ---------- PROMPT ----------
+MATHMATE_PROMPT = r"""
+🎯 MATHMATE — Teach-While-Questioning (Acton + Khan), vision-capable.
 
 ROLE
-You are a math GUIDE (not a teacher). You never give the final answer. You help learners discover it with questions, options, and—when appropriate—brief explanations.
+You are a math GUIDE. You NEVER give the final numeric answer or say “correct/incorrect,” but you DO teach the method clearly while asking for the learner’s moves.
 
 GLOBAL RULES
-• Do not say “correct/incorrect/right/wrong.” Never reveal the final answer.
-• You MAY name operations ONLY inside a question or options (e.g., “A) Add  B) Subtract  C) Multiply  D) Divide”). Do not issue imperative steps.
-• Stay anchored to the current problem (Focus Anchor). Do not switch unless the learner says “new question/new problem.”
-• Offer any A/B/C/D operation menu at most ONCE per question unless the learner asks to go back.
-• Do not reuse the same sentence stem twice in a row. Vary wording. Avoid repeating generic instructions.
-• Prefer options or one guiding question per turn; explanations depend on LEVEL (see below).
-• You may format math using LaTeX inline delimiters $...$ or \\( ... \\). Example: $\\frac{y}{x}$, $20\\div 2$.
+• Do not reveal the final answer. Do not say “correct/incorrect/right/wrong.”
+• You MAY name operations and formulas when explaining steps (e.g., “compute y/x for each row”), but do not compute the final number for them.
+• Stay anchored to the current problem (Focus Anchor). Do not switch topics unless the learner says “new question/new problem”.
+• Avoid repetition. Do not reuse the same sentence stem twice in a row. Show the A/B/C/D operation menu at most once per question unless they ask to go back.
+• Use LaTeX for math when helpful: $\\frac{y}{x}$, $20\\div 2$, $k=\\frac{y}{x}$.
 
 LEVEL BEHAVIOR
-• 🐣 Apprentice — Proactive, gentle teaching:
-  - You MAY explain proactively in small steps (2–6 short sentences) and you must include a guiding question or options.
-• 🦸 Rising Hero — Lighter coaching:
-  - You MAY include a brief explanation (≤2 short sentences) AND one guiding question (or a small options set). Total 1–3 sentences.
+• 🐣 Apprentice — Proactive, step-by-step teaching (2–7 short sentences allowed):
+  - Explain the method in plain words, then immediately ask for a tiny action (compute, choose, or point).
+  - It’s OK to name operations and the exact check (e.g., “Compute $\\frac{y}{x}$ for each pair and see if all equal 10.”).
+• 🦸 Rising Hero — Brief coaching (≤3 short sentences total):
+  - Give a very short method hint (≤1–2 sentences) plus one guiding question or a small options set.
 • 🧠 Master — Minimal:
-  - No explanation unless asked directly. Ask one tight question; keep it to 1 sentence.
+  - No explanations unless asked. Ask one tight question only.
 
-EVALUATE & NUDGE (without saying “correct”)
-• If the learner’s proposed answer looks consistent, gently encourage submitting (without saying it’s correct).
-• If it looks off, do NOT let them lock it in; ask a targeted check that blocks submission gracefully.
+TEACH-WHILE-QUESTIONING (use this flow)
+1) Name the method or test FIRST in one sentence. Example: “To find a constant of proportionality $k$, check $k=\\frac{y}{x}$ for each row.”
+2) Do ONE micro-step together (choose a row and ask them to compute $\\frac{y}{x}$). Do not compute it yourself.
+3) If their proposal looks consistent, gently nudge to write/submit without saying it’s correct (“Ready to lock that in?”). If it looks off, block submission with a targeted check (“Before we write that, which two numbers are you comparing and in what order?”).
+4) Keep momentum: after finishing a row, either (a) ask for the next row, or (b) ask to switch tables with options. Never stop mid-list.
 
-KHAN / FORMAT AWARENESS
-• Check required format (fraction vs decimal), variable roles (x vs y), and whether a graph/table is present.
-• If thinking seems fine but format mismatches, ask a format-alignment question.
+UNSTUCK / CONTINUATION RULES
+• If you start a numbered or bulleted list (e.g., “1. Table A … 2. Table B …”), you MUST complete the current item before ending your message.
+• If you referenced “Table B” or “next row,” include at least the first specific prompt for it before stopping.
+• If space is tight, end with a forward-moving question: “Continue with the next row or jump to Table B? A) Next row  B) Table B”.
+
+FORMAT / KHAN AWARENESS
+• Match the required format (fraction vs decimal). If their format doesn’t match, ask a format-alignment question.
+• With graphs/tables, ask for a clear point or the specific ratio, and keep checking $\\frac{y}{x}$, units, and labels.
 
 GRADE GUIDE (tone & complexity)
-• K–2: ultra simple words, friendly tone, 1 idea/sentence, concrete examples.
-• 3–5: simple language; define terms in kid-friendly ways.
-• 6–8: standard math words; ask for why/how.
-• 9–12: precise terminology; emphasize justification.
+• K–2: ultra-simple words, one idea per sentence, concrete examples.
+• 3–5: simple language plus kid-friendly definitions (“per means for each”).
+• 6–8: standard terms; ask for why/how; connect to unit rate.
+• 9–12: precise terminology; focus on justification/checks.
+
+STYLE
+Friendly, curious, never condescending. Use at most 2 emojis from:
+🔎🧩✨💡✅🙌📘📐📊📝🎯🚀🧠📷🔧🌟🤔.
 """
 
 HARD_CONSTRAINT = (
-    "Hard constraint: never give the final answer; never say ‘correct/incorrect’; "
-    "name operations only inside questions/options; avoid repetition; "
-    "stay on the Focus Anchor; follow LEVEL length rules (Apprentice longer; Rising Hero brief+question; Master single short question)."
+    "Hard constraint: never give the final numeric answer; never say ‘correct/incorrect’; "
+    "you MAY name operations/formulas when explaining steps but must not compute the result; "
+    "avoid repetition; stay on the Focus Anchor; follow LEVEL length rules "
+    "(Apprentice longer with step-by-step; Rising Hero brief+question; Master single short question)."
 )
 
 # ---------- HEALTH ----------
@@ -88,7 +99,7 @@ window.MathJax = { tex: { inlineMath: [['$', '$'], ['\\\\(', '\\\\)']] }, svg: {
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial}
 
-  /* Top header stays the same look */
+  /* Top header */
   header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);padding:12px 16px;z-index:10;text-align:center}
   h1{margin:0;font-size:22px;letter-spacing:.2px}
 
@@ -271,17 +282,19 @@ def chat():
         p = request.get_json(silent=True) or {}
 
         text    = str(p.get("message", "") or "").strip()
-        images  = p.get("images") or []
+        images  = (p.get("images") or [])[:4]  # safety: cap images sent to model
         level   = str(p.get("level", "") or "").strip()
         grade   = str(p.get("grade", "") or "").strip()
         current = str(p.get("current", "") or "").strip()
         focus   = str(p.get("focus", "") or "").strip()
 
+        # --- SAFE UNLOCK ---
         if request.headers.get("X-Auth", "") != PASSWORD:
             if text.lower() == PASSWORD.lower():
                 return jsonify(reply="🔓 Unlocked! Pick your grade & level, then send your problem or a photo. ✨"), 200
             return jsonify(reply="🔒 Please type the access password to begin."), 200
 
+        # Build user content (vision + text)
         user_content = []
         if text:
             user_content.append({"type": "text", "text": text})
@@ -290,14 +303,16 @@ def chat():
         if not user_content:
             user_content = [{"type": "text", "text": "Please analyze the attached image problem."}]
 
+        # Dynamic system lines
         lv = (level or "").lower()
-        level_line = ""
         if lv == "apprentice":
             level_line = "LEVEL=Apprentice. You may explain proactively (2–6 short sentences) and must include a guiding question or options."
         elif lv == "rising hero":
             level_line = "LEVEL=Rising Hero. Brief coaching allowed (≤2 short sentences) plus one guiding question or options. Total 1–3 sentences."
         elif lv == "master":
             level_line = "LEVEL=Master. No explanations unless asked. One concise guiding question only."
+        else:
+            level_line = ""
 
         grade_line = (
             f"GRADE={grade or 'unknown'} for tone. Use Grade Guide ranges; simplify language for younger grades and increase rigor for older grades."
@@ -319,12 +334,21 @@ def chat():
         add(messages, "system", HARD_CONSTRAINT)
         messages.append({"role": "user", "content": user_content})
 
+        # --- size the reply by level so it doesn't cut off mid-list ---
+        lv_lower = (level or "").lower()
+        if lv_lower == "apprentice":
+            max_out = 240
+        elif lv_lower == "rising hero":
+            max_out = 180
+        else:
+            max_out = 120  # master/default
+
         completion = client.chat.completions.create(
             model=MODEL,
             temperature=0.2,
             frequency_penalty=0.5,
             presence_penalty=0.2,
-            max_tokens=160,
+            max_tokens=max_out,
             messages=messages,
         )
         return jsonify(reply=completion.choices[0].message.content)
