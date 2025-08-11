@@ -31,47 +31,54 @@ GLOBAL RULES
 • You MAY name operations and formulas when explaining steps (e.g., “compute y/x for each row”), but do not compute the final number for them.
 • Stay anchored to the current problem (Focus Anchor). Do not switch topics unless the learner says “new question/new problem”.
 • Avoid repetition. Do not reuse the same sentence stem twice in a row. Show the A/B/C/D operation menu at most once per question unless they ask to go back.
-• Use LaTeX for math when helpful: $\\frac{y}{x}$, $20\\div 2$, $k=\\frac{y}{x}$.
+• Math formatting: always use LaTeX with braces for fractions, e.g., $\\frac{y}{x}$ (never write “fracyx”). If plain text is needed, write (y)/(x).
 
 LEVEL BEHAVIOR
 • 🐣 Apprentice — Proactive, step-by-step teaching (2–7 short sentences allowed):
-  - Explain the method in plain words, then immediately ask for a tiny action (compute, choose, or point).
+  - State the method plainly, then ask for a tiny action (compute, choose, or point).
   - It’s OK to name operations and the exact check (e.g., “Compute $\\frac{y}{x}$ for each pair and see if all equal 10.”).
 • 🦸 Rising Hero — Brief coaching (≤3 short sentences total):
-  - Give a very short method hint (≤1–2 sentences) plus one guiding question or a small options set.
+  - One short method hint + one guiding question or small options set.
 • 🧠 Master — Minimal:
-  - No explanations unless asked. Ask one tight question only.
+  - No explanations unless asked. One tight question only.
 
-TEACH-WHILE-QUESTIONING (use this flow)
-1) Name the method or test FIRST in one sentence. Example: “To find a constant of proportionality $k$, check $k=\\frac{y}{x}$ for each row.”
-2) Do ONE micro-step together (choose a row and ask them to compute $\\frac{y}{x}$). Do not compute it yourself.
-3) If their proposal looks consistent, gently nudge to write/submit without saying it’s correct (“Ready to lock that in?”). If it looks off, block submission with a targeted check (“Before we write that, which two numbers are you comparing and in what order?”).
-4) Keep momentum: after finishing a row, either (a) ask for the next row, or (b) ask to switch tables with options. Never stop mid-list.
+TEACH-WHILE-QUESTIONING (flow)
+1) Name the method first (e.g., “Check $k=\\frac{y}{x}$ for each row”).
+2) Do ONE micro-step together (pick a row; ask them to compute $\\frac{y}{x}$). You do not compute it.
+3) If their proposal looks consistent, nudge to write/submit without saying it’s correct (“Ready to lock that in?”).
+   If it looks off, block submission with a targeted check (“Before we write that, which is numerator and which is denominator—and why?”).
+4) Keep momentum: after a row, either ask for the next row or switch tables with options.
 
-UNSTUCK / CONTINUATION RULES
-• If you start a numbered or bulleted list (e.g., “1. Table A … 2. Table B …”), you MUST complete the current item before ending your message.
-• If you referenced “Table B” or “next row,” include at least the first specific prompt for it before stopping.
-• If space is tight, end with a forward-moving question: “Continue with the next row or jump to Table B? A) Next row  B) Table B”.
+ANSWER-ONLY HANDLER (A/B/C or “the answer is C”)
+• Do NOT accept or reject. Ask for the evidence:
+  “What value did you get for $\\frac{y}{x}$ on the first row in option C?” or
+  “Show one row from C where $\\frac{y}{x}=10$—which numbers did you divide?”
+• If they can justify one row, ask for another row (or to check a second table), then offer to submit.
+
+ORIENTATION CHECK (prevent x/y vs y/x slips)
+• Before nudging, explicitly ask which is numerator and which is denominator based on the problem statement or table labels.
+
+UNSTUCK / CONTINUATION
+• If you start “Table A… Table B…”, complete the current item before ending the message.
+• Never output generic resets like “It looks like you might be starting a problem…”. Instead, ask one targeted follow-up tied to the Focus Anchor.
 
 FORMAT / KHAN AWARENESS
-• Match the required format (fraction vs decimal). If their format doesn’t match, ask a format-alignment question.
-• With graphs/tables, ask for a clear point or the specific ratio, and keep checking $\\frac{y}{x}$, units, and labels.
+• Match required format (fraction vs decimal). If their format doesn’t match, ask a format-alignment question.
 
 GRADE GUIDE (tone & complexity)
 • K–2: ultra-simple words, one idea per sentence, concrete examples.
-• 3–5: simple language plus kid-friendly definitions (“per means for each”).
+• 3–5: simple language + kid-friendly definitions (“per means for each”).
 • 6–8: standard terms; ask for why/how; connect to unit rate.
-• 9–12: precise terminology; focus on justification/checks.
+• 9–12: precise terminology; justification/checks.
 
 STYLE
-Friendly, curious, never condescending. Use at most 2 emojis from:
-🔎🧩✨💡✅🙌📘📐📊📝🎯🚀🧠📷🔧🌟🤔.
+Friendly, curious, never condescending. ≤2 emojis from: 🔎🧩✨💡✅🙌📘📐📊📝🎯🚀🧠📷🔧🌟🤔.
 """
 
 HARD_CONSTRAINT = (
     "Hard constraint: never give the final numeric answer; never say ‘correct/incorrect’; "
     "you MAY name operations/formulas when explaining steps but must not compute the result; "
-    "avoid repetition; stay on the Focus Anchor; follow LEVEL length rules "
+    "avoid repetition and ban generic resets; stay on the Focus Anchor; follow LEVEL length rules "
     "(Apprentice longer with step-by-step; Rising Hero brief+question; Master single short question)."
 )
 
@@ -129,7 +136,7 @@ window.MathJax = { tex: { inlineMath: [['$', '$'], ['\\\\(', '\\\\)']] }, svg: {
   .inputHeader{display:flex;gap:16px;align-items:center;justify-content:flex-start;padding:10px 12px;border-bottom:1px solid var(--line);background:#f9fafb}
   .inputHeader label{display:flex;align-items:center;gap:8px;color:var(--text)}
   .inputArea{padding:10px}
-  textarea{width:100%;min-height:150px;max-height:360px;resize:vertical;padding:14px;border-radius:12px;border:1px solid var(--line);outline:none;background:#fff;color:var(--text)}
+  textarea{width:100%;min-height:150px;max-height:360px;resize:vertical;padding:14px;border-radius:12px;border:1px solid var(--line);outline:none;background:#fff;color:#0f172a}
   .inputFooter{border-top:1px dashed var(--line);padding:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
   .addBtn{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border:1px dashed var(--line);border-radius:12px;color:var(--muted);background:#fff;cursor:pointer}
   .thumbs{display:flex;gap:8px;flex-wrap:wrap}
@@ -203,14 +210,21 @@ const levelSel = document.getElementById('level');
 const gradeSel = document.getElementById('grade');
 
 let AUTH=''; let LEVEL=levelSel.value; let GRADE=gradeSel.value; let CURRENT=1; let FOCUS=''; let lastBot=''; let queuedImages=[];
+let HIST=[]; // rolling short history (text only)
 
+/* MathJax typeset helper */
 function typeset(row){ if(window.MathJax?.typesetPromise){ window.MathJax.typesetPromise([row]).catch(()=>{}); } }
 
 function addBubble(who,text){
   if(who==='MathMate'){
     const a=(text||'').trim(), b=(lastBot||'').trim();
-    if(b && (a===b || (a.length>20 && b.length>20 && a.startsWith(b.slice(0,Math.min(40,b.length)))))) return;
+    if(b && (a===b || (a.length>20 && b.length>20 && a.startsWith(b.slice(0,Math.min(40,b.length)))))) return; // soft de-dupe
     lastBot=a;
+    HIST.push({role:'assistant', content:a}); // record assistant history
+    HIST = HIST.slice(-6); // keep last 3 turns
+  } else {
+    HIST.push({role:'user', content:(text||'').trim()});
+    HIST = HIST.slice(-6);
   }
   const row=document.createElement('div'); row.className=who==='You'?'row me':'row bot';
   const bbl=document.createElement('div'); bbl.className='bubble'; bbl.innerHTML=(text||'').replace(/</g,'&lt;');
@@ -226,7 +240,11 @@ function updateFocus(text,imgCount){
 }
 
 async function post(payload){
-  const r=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json','X-Auth':AUTH},body:JSON.stringify({...payload,level:LEVEL,grade:GRADE,current:CURRENT,focus:FOCUS})});
+  const r=await fetch('/chat',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','X-Auth':AUTH},
+    body:JSON.stringify({ ...payload, level:LEVEL, grade:GRADE, current:CURRENT, focus:FOCUS, history:HIST })
+  });
   return r.json();
 }
 
@@ -266,8 +284,12 @@ sendBtn.onclick=async ()=>{
   const text=(msgBox.value||'').trim(); if(!text && queuedImages.length===0) return;
   updateFocus(text, queuedImages.length);
   addBubble('You', text || '(image(s) only)'); msgBox.value=''; sendBtn.disabled=true;
-  try{ const data=await post({message:text,images:queuedImages}); addBubble('MathMate',(data.reply ?? data.error ?? '(error)')); }
-  finally{ sendBtn.disabled=false; queuedImages=[]; thumbs.innerHTML=''; msgBox.focus(); }
+  try{
+    const data=await post({message:text,images:queuedImages});
+    addBubble('MathMate',(data.reply ?? data.error ?? '(error)'));
+  }finally{
+    sendBtn.disabled=false; queuedImages=[]; thumbs.innerHTML=''; msgBox.focus();
+  }
 };
 
 msgBox.addEventListener('keydown',(e)=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendBtn.click(); }});
@@ -281,12 +303,13 @@ def chat():
     try:
         p = request.get_json(silent=True) or {}
 
-        text    = str(p.get("message", "") or "").strip()
-        images  = (p.get("images") or [])[:4]  # safety: cap images sent to model
-        level   = str(p.get("level", "") or "").strip()
-        grade   = str(p.get("grade", "") or "").strip()
-        current = str(p.get("current", "") or "").strip()
-        focus   = str(p.get("focus", "") or "").strip()
+        text     = str(p.get("message", "") or "").strip()
+        images   = (p.get("images") or [])[:4]  # cap images sent to model
+        level    = str(p.get("level", "") or "").strip()
+        grade    = str(p.get("grade", "") or "").strip()
+        current  = str(p.get("current", "") or "").strip()
+        focus    = str(p.get("focus", "") or "").strip()
+        history  = p.get("history") or []  # [{role:'user'|'assistant', content:'...'}] last few turns
 
         # --- SAFE UNLOCK ---
         if request.headers.get("X-Auth", "") != PASSWORD:
@@ -314,9 +337,7 @@ def chat():
         else:
             level_line = ""
 
-        grade_line = (
-            f"GRADE={grade or 'unknown'} for tone. Use Grade Guide ranges; simplify language for younger grades and increase rigor for older grades."
-        )
+        grade_line = f"GRADE={grade or 'unknown'} for tone. Use Grade Guide; simplify language for younger grades and increase rigor for older grades."
         focus_line = (
             f"Focus Anchor: {focus or '(infer from latest learner content)'} "
             "Stay on this focus; do not switch topics unless the learner clearly starts a new problem or says 'new question/new problem'."
@@ -332,13 +353,21 @@ def chat():
         add(messages, "system", level_line)
         add(messages, "system", focus_line)
         add(messages, "system", HARD_CONSTRAINT)
+
+        # short rolling history (text-only, no images)
+        for h in history[-6:]:
+            role = "assistant" if (h.get("role") == "assistant") else "user"
+            content = str(h.get("content") or "").strip()
+            if content:
+                add(messages, role, content)
+
+        # current turn with vision
         messages.append({"role": "user", "content": user_content})
 
         # --- size the reply by level so it doesn't cut off mid-list ---
-        lv_lower = (level or "").lower()
-        if lv_lower == "apprentice":
-            max_out = 240
-        elif lv_lower == "rising hero":
+        if lv == "apprentice":
+            max_out = 260
+        elif lv == "rising hero":
             max_out = 180
         else:
             max_out = 120  # master/default
